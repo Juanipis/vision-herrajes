@@ -34,6 +34,10 @@ FEATURE_NAMES: Tuple[str, ...] = (
     "radial_max",
     "skeleton_endpoints",
     "skeleton_junctions",
+    "hole_ar_mean",
+    "hole_ar_std",
+    "hole_ecc_mean",
+    "hole_centroid_ar",
 )
 
 
@@ -97,6 +101,56 @@ def _hole_count(mask: np.ndarray) -> int:
     return sum(1 for (_, _, _, parent) in hierarchy[0] if parent >= 0)
 
 
+def _hole_shape_stats(mask: np.ndarray) -> Tuple[float, float, float, float]:
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:
+        return 0.0, 0.0, 0.0, 0.0
+
+    aspect_ratios: list[float] = []
+    eccentricities: list[float] = []
+    centers: list[Tuple[float, float]] = []
+
+    for idx, contour in enumerate(contours):
+        parent = hierarchy[0][idx][3]
+        if parent < 0:
+            continue
+        x, y, w, h = cv2.boundingRect(contour)
+        if w == 0 or h == 0:
+            continue
+        ar = max(w, h) / max(1, min(w, h))
+        aspect_ratios.append(float(ar))
+
+        if len(contour) >= 5:
+            (_, _), (major, minor), _ = cv2.fitEllipse(contour)
+            major, minor = float(max(major, minor)), float(min(major, minor))
+            if major > 1e-6:
+                eccentricities.append(float(np.sqrt(1 - (minor / major) ** 2)))
+
+        m = cv2.moments(contour)
+        if m["m00"] != 0:
+            cx = float(m["m10"] / m["m00"])
+            cy = float(m["m01"] / m["m00"])
+            centers.append((cx, cy))
+
+    ar_mean = float(np.mean(aspect_ratios)) if aspect_ratios else 0.0
+    ar_std = float(np.std(aspect_ratios)) if aspect_ratios else 0.0
+    ecc_mean = float(np.mean(eccentricities)) if eccentricities else 0.0
+
+    if len(centers) >= 2:
+        centers_arr = np.array(centers)
+        min_xy = centers_arr.min(axis=0)
+        max_xy = centers_arr.max(axis=0)
+        width, height = max_xy - min_xy
+        if width < 1e-6 or height < 1e-6:
+            centroid_ar = 0.0
+        else:
+            centroid_ar = float(max(width, height) / min(width, height))
+    else:
+        centroid_ar = 0.0
+
+    return ar_mean, ar_std, ecc_mean, centroid_ar
+
+
 def _radial_stats(contour: np.ndarray) -> Tuple[float, float, float]:
     points = contour.squeeze(axis=1).astype(np.float64)
     moments = cv2.moments(points)
@@ -142,6 +196,7 @@ def extract_features_from_mask(mask: np.ndarray) -> FeatureVector:
     holes = _hole_count(mask)
     radial_std, radial_min, radial_max = _radial_stats(main_contour)
     endpoints, junctions = _skeleton_metrics(mask)
+    hole_ar_mean, hole_ar_std, hole_ecc_mean, hole_centroid_ar = _hole_shape_stats(mask)
 
     feature_values = [
         *hu.tolist(),
@@ -152,6 +207,10 @@ def extract_features_from_mask(mask: np.ndarray) -> FeatureVector:
         float(radial_max),
         float(endpoints),
         float(junctions),
+        float(hole_ar_mean),
+        float(hole_ar_std),
+        float(hole_ecc_mean),
+        float(hole_centroid_ar),
     ]
 
     return FeatureVector(np.array(feature_values, dtype=np.float32), FEATURE_NAMES)

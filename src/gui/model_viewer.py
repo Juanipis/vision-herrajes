@@ -18,7 +18,7 @@ import joblib
 import numpy as np
 from PIL import Image, ImageTk
 
-from ..features.extractor import extract_features_from_mask
+from ..features.extractor import FEATURE_NAMES, extract_features_from_mask
 from ..processing.pipeline import FilterParameters, FilterPipeline
 
 RESULTS_DIR = Path("results")
@@ -106,6 +106,8 @@ class VideoClassifierApp(tk.Tk):
 
         self.model_bundle = load_model(model_path)
         params = load_preset(preset_name)
+
+        self._feature_indices = self._compute_feature_indices()
 
         self.pipeline = FilterPipeline()
         self.pipeline.set_parameters(params)
@@ -203,6 +205,17 @@ class VideoClassifierApp(tk.Tk):
         result_label.pack(fill="x", pady=10)
 
         self._update_contour_params()
+
+    def _compute_feature_indices(self) -> Tuple[int, ...]:
+        if not self.model_bundle.feature_names:
+            return tuple(range(len(FEATURE_NAMES)))
+        mapping = {name: idx for idx, name in enumerate(FEATURE_NAMES)}
+        indices: list[int] = []
+        for name in self.model_bundle.feature_names:
+            if name not in mapping:
+                raise ValueError(f"Feature '{name}' missing in current extractor definition")
+            indices.append(mapping[name])
+        return tuple(indices)
 
     def _open_video(self) -> None:
         from tkinter import filedialog
@@ -346,15 +359,12 @@ class VideoClassifierApp(tk.Tk):
         with self._classification_lock:
             self._last_prediction_time = time.time()
             roi_binary = (roi_mask > 0).astype(np.uint8) * 255
-            contours, _ = cv2.findContours(
-                roi_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-            if contours:
-                contour = max(contours, key=cv2.contourArea)
-                x, y, w, h = cv2.boundingRect(contour)
-                roi_binary = roi_binary[y : y + h, x : x + w]
             fv = extract_features_from_mask(roi_binary)
-            features = fv.values.reshape(1, -1)
+            values = fv.values
+            if len(self._feature_indices) != len(self.model_bundle.feature_names):
+                raise ValueError("Feature dimensionality mismatch between model and extractor")
+            selected = values[list(self._feature_indices)]
+            features = selected.reshape(1, -1)
             scaled = self.model_bundle.scaler.transform(features)
             probs = self.model_bundle.model.predict_proba(scaled)[0]
             best_idx = int(np.argmax(probs))
