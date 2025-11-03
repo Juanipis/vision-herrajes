@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,80 @@ def iter_train_videos(train_dir: Path) -> Iterable[Tuple[str, Path]]:
             yield label, path
 
 
+def classify_batch(
+    label: str,
+    video_path: Path,
+    bundle: ModelBundle,
+    feature_indices: Tuple[int, ...],
+    rois_batch: List[np.ndarray],
+    frames_batch: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray]],
+    capture_dir: Optional[Path],
+) -> Optional[Dict[str, object]]:
+    if not rois_batch:
+        return None
+
+    features_batch: List[np.ndarray] = []
+    for roi in rois_batch:
+        fv = extract_features_from_mask(roi)
+        values = fv.values
+        selected = values[list(feature_indices)]
+        features_batch.append(selected)
+
+    avg_probs: Optional[np.ndarray] = None
+    for feats in features_batch:
+        feats = np.asarray(feats).reshape(1, -1)
+        scaled = bundle.scaler.transform(feats)
+        probs = bundle.model.predict_proba(scaled)[0]
+        if avg_probs is None:
+            avg_probs = probs.copy()
+        else:
+            avg_probs += probs
+
+    assert avg_probs is not None
+    avg_probs /= len(features_batch)
+
+    names = bundle.feature_names or FEATURE_NAMES
+    hole_value = None
+    if "holes" in names:
+        hole_idx = names.index("holes")
+        hole_value = float(np.mean([feat[hole_idx] for feat in features_batch]))
+        if round(hole_value) == 1:
+            mask = np.ones_like(avg_probs, dtype=bool)
+            for ignore in ("dobleanillo", "ocho"):
+                indices = np.where(bundle.classes_ == ignore)[0]
+                mask[indices] = False
+            adjusted = avg_probs * mask
+            total = adjusted.sum()
+            if total > 0:
+                avg_probs = adjusted / total
+    best_idx = int(np.argmax(avg_probs))
+    pred_label = bundle.classes_[best_idx]
+    confidence = float(avg_probs[best_idx])
+
+    capture_paths = None
+    if capture_dir is not None and pred_label != label:
+        frame_idx, raw_frame, processed_frame, roi_mask = frames_batch[-1]
+        rel_dir = capture_dir / f"{label}_as_{pred_label}" / Path(video_path).stem
+        rel_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = rel_dir / f"raw_{frame_idx:06d}.png"
+        mask_path = rel_dir / f"mask_{frame_idx:06d}.png"
+        roi_path = rel_dir / f"roi_{frame_idx:06d}.png"
+        cv2.imwrite(str(raw_path), raw_frame)
+        cv2.imwrite(str(mask_path), processed_frame)
+        cv2.imwrite(str(roi_path), roi_mask)
+        capture_paths = {"raw": str(raw_path), "mask": str(mask_path), "roi": str(roi_path)}
+
+    frame_idx = frames_batch[-1][0]
+    return {
+        "video": str(video_path),
+        "expected": label,
+        "predicted": str(pred_label),
+        "confidence": confidence,
+        "frame": frame_idx,
+        "captures": capture_paths,
+    }
+
+
 def classify_video(
     label: str,
     video_path: Path,
@@ -120,6 +195,11 @@ def classify_video(
     right = int(width * (1.0 - params.roi_right_pct))
     center_window = max(int(width * center_ratio), 20)
 
+    roi_buffer: deque[np.ndarray] = deque(maxlen=4)
+    frame_buffer: deque[Tuple[int, np.ndarray, np.ndarray, np.ndarray]] = deque(maxlen=4)
+    executor = ThreadPoolExecutor(max_workers=2)
+    pending = []
+
     last_distance: Optional[float] = None
     approaching = False
     object_present = False
@@ -134,80 +214,77 @@ def classify_video(
             break
         processed = pipeline.apply(frame)
         roi_mask = processed[:, left:right]
+        roi_binary = (roi_mask > 0).astype(np.uint8) * 255
+        roi_buffer.append(roi_binary.copy())
+        frame_buffer.append((frame_index, frame.copy(), processed.copy(), roi_binary.copy()))
+
         contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
+            roi_buffer.clear()
+            frame_buffer.clear()
             object_present = False
             classified_current = False
             last_distance = None
             approaching = False
+            frame_index += 1
             continue
 
         contour = max(contours, key=cv2.contourArea)
         moments = cv2.moments(contour)
         if moments["m00"] == 0:
+            frame_index += 1
             continue
         centroid_x = (moments["m10"] / moments["m00"]) + left
         frame_center = width / 2.0
         distance = abs(centroid_x - frame_center)
 
         if not object_present:
+            roi_buffer.clear()
+            frame_buffer.clear()
             object_present = True
             classified_current = False
             last_distance = distance
             approaching = False
+            frame_index += 1
             continue
 
         if last_distance is None:
             last_distance = distance
+            frame_index += 1
             continue
 
         if distance < last_distance:
             approaching = True
         else:
             if approaching and not classified_current and distance <= center_window:
-                roi_binary = (roi_mask > 0).astype(np.uint8) * 255
-                fv = extract_features_from_mask(roi_binary)
-                values = fv.values
-                selected = values[list(feature_indices)]
-                features = selected.reshape(1, -1)
-                scaled = bundle.scaler.transform(features)
-                probs = bundle.model.predict_proba(scaled)[0]
-                best_idx = int(np.argmax(probs))
-                pred_label = bundle.classes_[best_idx]
-                confidence = float(probs[best_idx])
-                capture_paths = None
-                if capture_dir is not None and pred_label != label:
-                    rel_dir = capture_dir / f"{label}_as_{pred_label}" / video_path.stem
-                    rel_dir.mkdir(parents=True, exist_ok=True)
-                    raw_path = rel_dir / f"raw_{frame_index:06d}.png"
-                    mask_path = rel_dir / f"mask_{frame_index:06d}.png"
-                    roi_path = rel_dir / f"roi_{frame_index:06d}.png"
-                    cv2.imwrite(str(raw_path), frame)
-                    cv2.imwrite(str(mask_path), processed)
-                    cv2.imwrite(str(roi_path), roi_binary)
-                    capture_paths = {
-                        "raw": str(raw_path),
-                        "mask": str(mask_path),
-                        "roi": str(roi_path),
-                    }
-
-                predictions.append(
-                    {
-                        "video": str(video_path),
-                        "expected": label,
-                        "predicted": str(pred_label),
-                        "confidence": confidence,
-                        "frame": frame_index,
-                        "captures": capture_paths,
-                    }
+                rois_batch = list(roi_buffer)
+                frames_batch = list(frame_buffer)
+                future = executor.submit(
+                    classify_batch,
+                    label,
+                    video_path,
+                    bundle,
+                    feature_indices,
+                    rois_batch,
+                    frames_batch,
+                    capture_dir,
                 )
+                pending.append(future)
                 classified_current = True
+                roi_buffer.clear()
+                frame_buffer.clear()
 
         last_distance = distance
         frame_index += 1
 
     cap.release()
+    for future in pending:
+        result = future.result()
+        if result:
+            predictions.append(result)
+    executor.shutdown(wait=True)
+
     return {
         "label": label,
         "video": str(video_path),

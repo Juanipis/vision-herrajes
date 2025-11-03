@@ -7,9 +7,11 @@ import queue
 import threading
 import time
 import tkinter as tk
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import argparse
 
@@ -115,7 +117,7 @@ class VideoClassifierApp(tk.Tk):
         self.video_capture: Optional[cv2.VideoCapture] = None
         self.video_path: Optional[Path] = None
         self._stop_event = threading.Event()
-        self._frame_queue: "queue.Queue[Tuple[np.ndarray, np.ndarray]]" = queue.Queue(
+        self._frame_queue: "queue.Queue[Tuple[np.ndarray, np.ndarray, int]]" = queue.Queue(
             maxsize=5
         )
 
@@ -132,6 +134,11 @@ class VideoClassifierApp(tk.Tk):
         self._contour_thickness_var = tk.IntVar(value=self._contour_thickness)
         self._object_present = False
         self._classified_current = False
+        self._roi_buffer: deque[np.ndarray] = deque(maxlen=4)
+        self._frame_buffer: deque[Tuple[int, np.ndarray, np.ndarray, np.ndarray]] = deque(maxlen=4)
+        self._classification_executor = ThreadPoolExecutor(max_workers=1)
+        self._pending_future = None
+        self._current_frame_index = 0
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -204,6 +211,15 @@ class VideoClassifierApp(tk.Tk):
         )
         result_label.pack(fill="x", pady=10)
 
+        self.warning_var = tk.StringVar(value="")
+        warning_label = tk.Label(
+            self,
+            textvariable=self.warning_var,
+            font=("Helvetica", 20, "bold"),
+            fg="#FF3333",
+        )
+        warning_label.pack(fill="x")
+
         self._update_contour_params()
 
     def _compute_feature_indices(self) -> Tuple[int, ...]:
@@ -261,25 +277,29 @@ class VideoClassifierApp(tk.Tk):
         cap = self.video_capture
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.pipeline.reset_state()
+        frame_idx = 0
         while not self._stop_event.is_set():
             success, frame = cap.read()
             if not success or frame is None:
                 break
             processed = self.pipeline.apply(frame)
             try:
-                self._frame_queue.put((frame, processed), timeout=0.05)
+                self._frame_queue.put((frame, processed, frame_idx), timeout=0.05)
             except queue.Full:
+                frame_idx += 1
                 continue
+            frame_idx += 1
         self._stop_event.set()
 
     def _update_display(self) -> None:
         if self._stop_event.is_set():
             return
         try:
-            frame, processed = self._frame_queue.get_nowait()
+            frame, processed, idx = self._frame_queue.get_nowait()
         except queue.Empty:
             self.after(16, self._update_display)
             return
+        self._current_frame_index = idx
 
         self.raw_canvas.update_image(frame)
         if self._show_contours:
@@ -287,24 +307,37 @@ class VideoClassifierApp(tk.Tk):
             self.proc_canvas.update_image(display_processed, is_mask=False)
         else:
             self.proc_canvas.update_image(processed, is_mask=True)
-        self._maybe_classify(processed)
+        self._maybe_classify(frame, processed)
 
         self.after(16, self._update_display)
 
-    def _maybe_classify(self, mask: np.ndarray) -> None:
+    def _maybe_classify(self, frame: np.ndarray, mask: np.ndarray) -> None:
         height, width = mask.shape[:2]
         roi_left = int(width * self.pipeline.parameters.roi_left_pct)
         roi_right = int(width * (1.0 - self.pipeline.parameters.roi_right_pct))
         roi = mask[:, roi_left:roi_right]
-        contours, hierarchy = cv2.findContours(
-            roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        roi_binary = (roi > 0).astype(np.uint8) * 255
+
+        self._roi_buffer.append(roi_binary.copy())
+        self._frame_buffer.append(
+            (
+                self._current_frame_index,
+                frame.copy(),
+                mask.copy(),
+                roi_binary.copy(),
+            )
         )
+
+        contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
+            self._roi_buffer.clear()
+            self._frame_buffer.clear()
             self._approaching = False
             self._last_center_distance = None
             self._object_present = False
             self._classified_current = False
             return
+
         contour = max(contours, key=cv2.contourArea)
         moments = cv2.moments(contour)
         if moments["m00"] == 0:
@@ -314,6 +347,8 @@ class VideoClassifierApp(tk.Tk):
         distance = abs(centroid_x - frame_center)
 
         if not self._object_present:
+            self._roi_buffer.clear()
+            self._frame_buffer.clear()
             self._object_present = True
             self._classified_current = False
             self._last_center_distance = distance
@@ -337,16 +372,17 @@ class VideoClassifierApp(tk.Tk):
                 center_window = max(width * 0.05, 20)
                 if distance <= center_window:
                     self._approaching = False
-                    self._classify_current_frame(roi)
+                    self._submit_classification()
                     self._classified_current = True
+
         self._last_center_distance = distance
 
     def _toggle_contours(self) -> None:
         self._show_contours = bool(self._contour_var.get())
         if not self._frame_queue.empty():
             try:
-                frame, processed = self._frame_queue.get_nowait()
-                self._frame_queue.put((frame, processed))
+                frame, processed, idx = self._frame_queue.get_nowait()
+                self._frame_queue.put((frame, processed, idx))
             except queue.Full:
                 pass
         self._render_current_frame()
@@ -355,34 +391,101 @@ class VideoClassifierApp(tk.Tk):
         self._contour_offset = max(0, int(self._contour_offset_var.get()))
         self._contour_thickness = max(1, int(self._contour_thickness_var.get()))
 
-    def _classify_current_frame(self, roi_mask: np.ndarray) -> None:
-        with self._classification_lock:
-            self._last_prediction_time = time.time()
-            roi_binary = (roi_mask > 0).astype(np.uint8) * 255
-            fv = extract_features_from_mask(roi_binary)
+    def _submit_classification(self) -> None:
+        if not self._roi_buffer:
+            return
+        rois_batch = list(self._roi_buffer)
+        frames_batch = list(self._frame_buffer)
+        self._last_prediction_time = time.time()
+
+        future = self._classification_executor.submit(
+            self._classify_batch,
+            rois_batch,
+            frames_batch,
+        )
+        self._pending_future = future
+        future.add_done_callback(lambda fut: self.after(0, self._handle_classification_result, fut.result()))
+        self._roi_buffer.clear()
+        self._frame_buffer.clear()
+
+    def _classify_batch(
+        self,
+        rois_batch: List[np.ndarray],
+        frames_batch: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray]],
+    ) -> Dict[str, object]:
+        features_batch: List[np.ndarray] = []
+        for roi in rois_batch:
+            fv = extract_features_from_mask(roi)
             values = fv.values
-            if len(self._feature_indices) != len(self.model_bundle.feature_names):
-                raise ValueError("Feature dimensionality mismatch between model and extractor")
             selected = values[list(self._feature_indices)]
-            features = selected.reshape(1, -1)
-            names = self.model_bundle.feature_names or FEATURE_NAMES
-            print("\n=== Feature Vector ===")
-            for name, val in zip(names, selected.tolist()):
-                print(f"{name:>20}: {val:+.6f}")
-            print("======================\n")
-            scaled = self.model_bundle.scaler.transform(features)
+            features_batch.append(selected)
+
+        names = self.model_bundle.feature_names or FEATURE_NAMES
+        avg_features = np.mean(np.stack(features_batch, axis=0), axis=0)
+        print("\n=== Feature Vector (avg of last 4) ===")
+        for name, val in zip(names, avg_features.tolist()):
+            print(f"{name:>20}: {val:+.6f}")
+        print("======================\n")
+
+        avg_probs: Optional[np.ndarray] = None
+        for feats in features_batch:
+            feats = np.asarray(feats).reshape(1, -1)
+            scaled = self.model_bundle.scaler.transform(feats)
             probs = self.model_bundle.model.predict_proba(scaled)[0]
-            best_idx = int(np.argmax(probs))
-            label = self.model_bundle.classes_[best_idx]
-            confidence = float(probs[best_idx])
-            print("Prediction:", label, "Confidence:", f"{confidence:.4f}")
-            print("======================\n")
-            self.result_var.set(f"{label.upper()} ({confidence:.2f})")
+            if avg_probs is None:
+                avg_probs = probs.copy()
+            else:
+                avg_probs += probs
+
+        assert avg_probs is not None
+        avg_probs /= len(features_batch)
+
+        hole_value = None
+        if "holes" in names:
+            hole_idx = names.index("holes")
+            hole_value = float(np.mean([feat[hole_idx] for feat in features_batch]))
+            if round(hole_value) == 1:
+                mask = np.ones_like(avg_probs, dtype=bool)
+                for ignore in ("dobleanillo", "ocho"):
+                    indices = np.where(self.model_bundle.classes_ == ignore)[0]
+                    mask[indices] = False
+                adjusted = avg_probs * mask
+                total = adjusted.sum()
+                if total > 0:
+                    avg_probs = adjusted / total
+        best_idx = int(np.argmax(avg_probs))
+        label = self.model_bundle.classes_[best_idx]
+        confidence = float(avg_probs[best_idx])
+        print("Prediction:", label, "Confidence:", f"{confidence:.4f}")
+        print("======================\n")
+
+        touching = self._is_touching_border(frames_batch[-1][2])
+        return {"label": label, "confidence": confidence, "touching_border": touching}
+
+    def _is_touching_border(self, mask: np.ndarray) -> bool:
+        if mask is None or mask.size == 0:
+            return False
+        rows, cols = mask.shape[:2]
+        if np.any(mask[0, :] > 0) or np.any(mask[rows - 1, :] > 0):
+            return True
+        if np.any(mask[:, 0] > 0) or np.any(mask[:, cols - 1] > 0):
+            return True
+        return False
+
+    def _handle_classification_result(self, result: Dict[str, object]) -> None:
+        if not result:
+            return
+        self.result_var.set(f"{result['label'].upper()} ({result['confidence']:.2f})")
+        if result.get("touching_border"):
+            self.warning_var.set("WARNING: Object touching border")
+        else:
+            self.warning_var.set("")
 
     def _on_close(self) -> None:
         self._stop_playback()
         if self.video_capture is not None:
             self.video_capture.release()
+        self._classification_executor.shutdown(wait=False)
         self.destroy()
 
     def _apply_contour_overlay(self, mask: np.ndarray) -> np.ndarray:
@@ -493,3 +596,11 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    def _is_touching_border(self, mask: np.ndarray) -> bool:
+        if mask is None or mask.size == 0:
+            return False
+        rows, cols = mask.shape[:2]
+        border_pixels = np.concatenate(
+            [mask[0, :], mask[rows - 1, :], mask[:, 0], mask[:, cols - 1]]
+        )
+        return np.any(border_pixels > 0)
