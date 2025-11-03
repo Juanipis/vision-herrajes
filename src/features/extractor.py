@@ -34,6 +34,7 @@ FEATURE_NAMES: Tuple[str, ...] = (
     "radial_max",
     "skeleton_endpoints",
     "skeleton_junctions",
+    "holes",
     "hole_ar_mean",
     "hole_ar_std",
     "hole_ecc_mean",
@@ -94,26 +95,37 @@ def _fourier_descriptors(contour: np.ndarray, n_components: int = 10) -> np.ndar
     return magnitudes.astype(np.float32)
 
 
-def _hole_count(mask: np.ndarray) -> int:
+def _find_internal_contours(mask: np.ndarray, area_threshold_ratio: float = 0.01) -> list[np.ndarray]:
     contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     if hierarchy is None:
-        return 0
-    return sum(1 for (_, _, _, parent) in hierarchy[0] if parent >= 0)
+        return []
+    total_area = float(np.count_nonzero(mask))
+    min_area = total_area * area_threshold_ratio
+    internal: list[np.ndarray] = []
+    for idx, contour in enumerate(contours):
+        parent = hierarchy[0][idx][3]
+        if parent < 0:
+            continue
+        area = cv2.contourArea(contour)
+        if area >= min_area:
+            internal.append(contour)
+    return internal
+
+
+def _hole_count(mask: np.ndarray) -> int:
+    return len(_find_internal_contours(mask))
 
 
 def _hole_shape_stats(mask: np.ndarray) -> Tuple[float, float, float, float]:
-    contours, hierarchy = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
-    if hierarchy is None:
+    internal = _find_internal_contours(mask)
+    if not internal:
         return 0.0, 0.0, 0.0, 0.0
 
     aspect_ratios: list[float] = []
     eccentricities: list[float] = []
     centers: list[Tuple[float, float]] = []
 
-    for idx, contour in enumerate(contours):
-        parent = hierarchy[0][idx][3]
-        if parent < 0:
-            continue
+    for contour in internal:
         x, y, w, h = cv2.boundingRect(contour)
         if w == 0 or h == 0:
             continue
@@ -196,6 +208,7 @@ def extract_features_from_mask(mask: np.ndarray) -> FeatureVector:
     holes = _hole_count(mask)
     radial_std, radial_min, radial_max = _radial_stats(main_contour)
     endpoints, junctions = _skeleton_metrics(mask)
+    hole_count = _hole_count(mask)
     hole_ar_mean, hole_ar_std, hole_ecc_mean, hole_centroid_ar = _hole_shape_stats(mask)
 
     feature_values = [
@@ -207,6 +220,7 @@ def extract_features_from_mask(mask: np.ndarray) -> FeatureVector:
         float(radial_max),
         float(endpoints),
         float(junctions),
+        float(hole_count),
         float(hole_ar_mean),
         float(hole_ar_std),
         float(hole_ecc_mean),

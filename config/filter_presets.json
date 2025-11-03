@@ -34,7 +34,7 @@
     "roi_left_pct": 0.2,
     "roi_right_pct": 0.2,
     "expand_mask": true,
-    "expand_kernel": 3,
+    "expand_kernel": 13,
     "expand_iterations": 1,
     "use_closing": false,
     "closing_kernel": 0,

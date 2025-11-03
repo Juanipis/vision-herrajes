@@ -7,7 +7,7 @@ PYTHON := $(VENV)/bin/python
 UV := $(VENV)/bin/uv
 REQ_PKGS := opencv-python pillow av tqdm scikit-image scikit-learn scipy joblib
 
-.PHONY: help gui preview install-deps dataset train classify
+.PHONY: help gui preview install-deps dataset train classify evaluate clean-pycache clean-ds
 
 help:
 	@echo "Available targets:"
@@ -18,6 +18,9 @@ help:
 	@echo "  make dataset PRESET=name   # Build balanced mask dataset"
 	@echo "  make train           # Train the MLP classifier on mask features"
 	@echo "  make classify        # Launch the inference GUI"
+	@echo "  make evaluate        # Batch-evaluate videos in train/"
+	@echo "  make clean-pycache   # Remove __pycache__ directories"
+	@echo "  make clean-ds        # Remove .DS_Store files"
 
 install-deps:
 	@if [ ! -x "$(UV)" ]; then \
@@ -69,3 +72,12 @@ train: _gui-check
 # Launch the classification viewer GUI.
 classify: _gui-check
 	"$(PYTHON)" -m src.gui.model_viewer$(if $(MODEL), --model "$(MODEL)")$(if $(PRESET), --preset "$(PRESET)")
+
+evaluate: _gui-check
+	"$(PYTHON)" scripts/batch_classify.py$(if $(MODEL), --model "$(MODEL)")$(if $(PRESET), --preset "$(PRESET)")$(if $(TRAIN_DIR), --train-dir "$(TRAIN_DIR)")$(if $(WORKERS), --workers "$(WORKERS)")$(if $(CAPTURE_DIR), --capture-dir "$(CAPTURE_DIR)")
+
+clean-pycache:
+	find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+
+clean-ds:
+	find . -name '.DS_Store' -delete

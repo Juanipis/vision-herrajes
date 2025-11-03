@@ -108,16 +108,28 @@ def balance_videos(videos: Dict[str, List[Path]], seed: int) -> Dict[str, List[V
     balanced: Dict[str, List[VideoSelection]] = {}
 
     for label, paths in videos.items():
-        selections: List[VideoSelection] = []
+        if not paths:
+            raise RuntimeError(f"Label '{label}' has no videos")
+
+        base = [VideoSelection(path=path, copy_index=0) for path in paths]
+
         if len(paths) >= target:
-            chosen = rng.sample(paths, target) if len(paths) > target else paths
-            selections.extend(VideoSelection(path=path, copy_index=0) for path in chosen)
-        else:
-            copies = 0
-            while len(selections) < target:
-                path = rng.choice(paths)
-                selections.append(VideoSelection(path=path, copy_index=copies))
-                copies += 1
+            if len(paths) > target:
+                chosen = rng.sample(base, target)
+                balanced[label] = chosen
+            else:
+                balanced[label] = base
+            continue
+
+        copies: Dict[Path, int] = {path: 0 for path in paths}
+        selections = base.copy()
+        idx = 0
+        while len(selections) < target:
+            path = paths[idx % len(paths)]
+            copies[path] += 1
+            selections.append(VideoSelection(path=path, copy_index=copies[path]))
+            idx += 1
+        rng.shuffle(selections)
         balanced[label] = selections
     return balanced
 

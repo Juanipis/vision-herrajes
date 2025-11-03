@@ -365,11 +365,18 @@ class VideoClassifierApp(tk.Tk):
                 raise ValueError("Feature dimensionality mismatch between model and extractor")
             selected = values[list(self._feature_indices)]
             features = selected.reshape(1, -1)
+            names = self.model_bundle.feature_names or FEATURE_NAMES
+            print("\n=== Feature Vector ===")
+            for name, val in zip(names, selected.tolist()):
+                print(f"{name:>20}: {val:+.6f}")
+            print("======================\n")
             scaled = self.model_bundle.scaler.transform(features)
             probs = self.model_bundle.model.predict_proba(scaled)[0]
             best_idx = int(np.argmax(probs))
             label = self.model_bundle.classes_[best_idx]
             confidence = float(probs[best_idx])
+            print("Prediction:", label, "Confidence:", f"{confidence:.4f}")
+            print("======================\n")
             self.result_var.set(f"{label.upper()} ({confidence:.2f})")
 
     def _on_close(self) -> None:
