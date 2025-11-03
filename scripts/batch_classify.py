@@ -128,18 +128,7 @@ def classify_batch(
 
     names = bundle.feature_names or FEATURE_NAMES
     hole_value = None
-    if "holes" in names:
-        hole_idx = names.index("holes")
-        hole_value = float(np.mean([feat[hole_idx] for feat in features_batch]))
-        if round(hole_value) == 1:
-            mask = np.ones_like(avg_probs, dtype=bool)
-            for ignore in ("dobleanillo", "ocho"):
-                indices = np.where(bundle.classes_ == ignore)[0]
-                mask[indices] = False
-            adjusted = avg_probs * mask
-            total = adjusted.sum()
-            if total > 0:
-                avg_probs = adjusted / total
+    # No explicit hole-based suppression; let the classifier decide.
     best_idx = int(np.argmax(avg_probs))
     pred_label = bundle.classes_[best_idx]
     confidence = float(avg_probs[best_idx])

@@ -440,19 +440,7 @@ class VideoClassifierApp(tk.Tk):
         assert avg_probs is not None
         avg_probs /= len(features_batch)
 
-        hole_value = None
-        if "holes" in names:
-            hole_idx = names.index("holes")
-            hole_value = float(np.mean([feat[hole_idx] for feat in features_batch]))
-            if round(hole_value) == 1:
-                mask = np.ones_like(avg_probs, dtype=bool)
-                for ignore in ("dobleanillo", "ocho"):
-                    indices = np.where(self.model_bundle.classes_ == ignore)[0]
-                    mask[indices] = False
-                adjusted = avg_probs * mask
-                total = adjusted.sum()
-                if total > 0:
-                    avg_probs = adjusted / total
+        # no heuristic suppression; rely on model output directly
         best_idx = int(np.argmax(avg_probs))
         label = self.model_bundle.classes_[best_idx]
         confidence = float(avg_probs[best_idx])
