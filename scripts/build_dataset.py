@@ -10,7 +10,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -31,7 +31,6 @@ from src.io.video_loader import VideoLoader, VideoLoaderError
 from src.processing.pipeline import FilterParameters, FilterPipeline
 
 ROI_MARGIN_RATIO = 0.04
-INSIDE_STREAK = 3
 MIN_FRAMES_PER_VIDEO = 5
 
 
@@ -53,6 +52,10 @@ class Task:
     output_root: Path
     preset: Dict[str, object]
     enable_frame_bar: bool = False
+    save_frames: bool = True
+    png_compression: int = 3
+    keep_every: int = 1
+    scan_step: int = 10
 
 
 def setup_logging() -> logging.Logger:
@@ -155,6 +158,67 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
+def _write_pass(
+    start_idx: int,
+    end_idx: int,
+    evaluator: Callable[[int], Optional[Tuple[bool, np.ndarray, np.ndarray, Optional[Tuple[int, int, int, int]]]]],
+    mask_dir: Path,
+    frame_dir: Path,
+    task: Task,
+    alias: str,
+    left: int,
+    right: int,
+    top: int,
+    bottom: int,
+    pass_index: int,
+    manifest: List[Dict[str, object]],
+    cache: Dict[int, Tuple[bool, np.ndarray, np.ndarray, Optional[Tuple[int, int, int, int]]]],
+) -> int:
+    write_params = [cv2.IMWRITE_PNG_COMPRESSION, task.png_compression]
+    kept = 0
+    for frame_index in range(start_idx, end_idx + 1):
+        data = evaluator(frame_index)
+        if data is None:
+            continue
+        inside, roi_frame, roi_mask, bbox = data
+        if not inside or bbox is None:
+            continue
+        if task.keep_every > 1 and (frame_index - start_idx) % task.keep_every != 0:
+            continue
+
+        mask_path = mask_dir / f"frame_{frame_index:05d}.png"
+        cv2.imwrite(str(mask_path), roi_mask, write_params)
+
+        frame_rel_path: Optional[str] = None
+        if task.save_frames:
+            frame_path = frame_dir / f"frame_{frame_index:05d}.png"
+            cv2.imwrite(str(frame_path), roi_frame, write_params)
+            frame_rel_path = str(frame_path.relative_to(task.output_root))
+
+        entry = {
+            "label": task.label,
+            "video": str(task.selection.path),
+            "alias": alias,
+            "pass_index": pass_index,
+            "frame_index": frame_index,
+            "mask_path": str(mask_path.relative_to(task.output_root)),
+            "bbox": bbox,
+            "roi": {
+                "left": left,
+                "right": right,
+                "top": top,
+                "bottom": bottom,
+            },
+        }
+        if frame_rel_path is not None:
+            entry["frame_path"] = frame_rel_path
+        manifest.append(entry)
+
+        cache.pop(frame_index, None)
+        kept += 1
+    return kept
+
+
 def execute_task(task: Task) -> Dict[str, object]:
     params = FilterParameters.from_dict(task.preset)
     pipeline = FilterPipeline()
@@ -197,81 +261,145 @@ def execute_task(task: Task) -> Dict[str, object]:
     frame_dir = ensure_dir(video_dir / "frame")
 
     total_frames = properties.frame_count or 0
-    iterable: Iterable[int]
-    if total_frames > 0:
-        iterable = range(total_frames)
-    else:
-        iterable = iter(int, 1)  # never ending, will break on read failure
-
-    capture_started = False
-    inside_streak = 0
     captured = 0
     skipped = 0
     manifest: List[Dict[str, object]] = []
+    cache: Dict[int, Tuple[bool, np.ndarray, np.ndarray, Optional[Tuple[int, int, int, int]]]] = {}
+
+    def evaluate(frame_index: int) -> Optional[Tuple[bool, np.ndarray, np.ndarray, Optional[Tuple[int, int, int, int]]]]:
+        if frame_index < 0:
+            return None
+        if total_frames and frame_index >= total_frames:
+            return None
+        if frame_index in cache:
+            return cache[frame_index]
+        try:
+            frame_local = loader.read_frame(frame_index)
+        except VideoLoaderError:
+            return None
+        processed_local = pipeline.apply(frame_local)
+        roi_frame_local = frame_local[top:bottom, left:right]
+        roi_mask_local = processed_local[top:bottom, left:right]
+        inside_local, bbox_local = mask_inside_roi(roi_mask_local, ROI_MARGIN_RATIO)
+        data_local = (inside_local, roi_frame_local, roi_mask_local, bbox_local)
+        cache[frame_index] = data_local
+        return data_local
+
+    processed_ranges: List[Tuple[int, int]] = []
+    pass_index = -1
+    scan_step = max(1, task.scan_step)
+
+    if total_frames <= 0:
+        frame_index = 0
+        bar = tqdm(desc=f"{task.label}:{alias}", leave=False, disable=not task.enable_frame_bar)
+        while True:
+            data = evaluate(frame_index)
+            if data is None:
+                break
+            inside, *_ = data
+            if not inside:
+                skipped += 1
+                frame_index += scan_step
+                continue
+            start_idx = frame_index
+            while True:
+                prev = evaluate(start_idx - 1)
+                if prev is None or not prev[0]:
+                    break
+                start_idx -= 1
+            end_idx = frame_index
+            while True:
+                nxt = evaluate(end_idx + 1)
+                if nxt is None or not nxt[0]:
+                    break
+                end_idx += 1
+            if not any(start <= frame_index <= end for start, end in processed_ranges):
+                pass_index += 1
+                captured += _write_pass(
+                    start_idx,
+                    end_idx,
+                    evaluate,
+                    mask_dir,
+                    frame_dir,
+                    task,
+                    alias,
+                    left,
+                    right,
+                    top,
+                    bottom,
+                    pass_index,
+                    manifest,
+                    cache,
+                )
+                processed_ranges.append((start_idx, end_idx))
+            frame_index = end_idx + scan_step
+        warning = "" if captured >= MIN_FRAMES_PER_VIDEO else f"Video {task.selection.path.name} yielded {captured} frames"
+        loader.close()
+        return {
+            "label": task.label,
+            "alias": alias,
+            "captured": captured,
+            "skipped": skipped,
+            "warning": warning,
+            "manifest": manifest,
+        }
 
     bar = tqdm(
-        iterable,
-        total=total_frames or None,
+        range(0, total_frames, scan_step),
+        total=(total_frames + scan_step - 1) // scan_step,
         desc=f"{task.label}:{alias}",
         leave=False,
         disable=not task.enable_frame_bar,
     )
 
     for frame_index in bar:
-        try:
-            frame = loader.read_frame(frame_index)
-        except VideoLoaderError:
-            break
-
-        processed = pipeline.apply(frame)
-        roi_frame = frame[top:bottom, left:right]
-        roi_mask = processed[top:bottom, left:right]
-
-        inside, bbox = mask_inside_roi(roi_mask, ROI_MARGIN_RATIO)
-
-        if not capture_started:
-            if inside:
-                inside_streak += 1
-                if inside_streak >= INSIDE_STREAK:
-                    capture_started = True
-            else:
-                inside_streak = 0
-                skipped += 1
+        data = evaluate(frame_index)
+        if data is None:
+            continue
+        inside, *_ = data
+        if not inside:
+            skipped += 1
+            continue
+        if any(start <= frame_index <= end for start, end in processed_ranges):
             continue
 
-        if not inside or bbox is None:
-            break
+        start_idx = frame_index
+        while start_idx > 0:
+            prev = evaluate(start_idx - 1)
+            if prev is None or not prev[0]:
+                break
+            start_idx -= 1
 
-        mask_path = mask_dir / f"frame_{frame_index:05d}.png"
-        frame_path = frame_dir / f"frame_{frame_index:05d}.png"
-        cv2.imwrite(str(mask_path), roi_mask)
-        cv2.imwrite(str(frame_path), roi_frame)
+        end_idx = frame_index
+        while end_idx + 1 < total_frames:
+            nxt = evaluate(end_idx + 1)
+            if nxt is None or not nxt[0]:
+                break
+            end_idx += 1
 
-        captured += 1
-        manifest.append(
-            {
-                "label": task.label,
-                "video": str(task.selection.path),
-                "alias": alias,
-                "frame_index": frame_index,
-                "frame_path": str(frame_path.relative_to(task.output_root)),
-                "mask_path": str(mask_path.relative_to(task.output_root)),
-                "bbox": bbox,
-                "roi": {
-                    "left": left,
-                    "right": right,
-                    "top": top,
-                    "bottom": bottom,
-                },
-            }
+        pass_index += 1
+        captured += _write_pass(
+            start_idx,
+            end_idx,
+            evaluate,
+            mask_dir,
+            frame_dir,
+            task,
+            alias,
+            left,
+            right,
+            top,
+            bottom,
+            pass_index,
+            manifest,
+            cache,
         )
+        processed_ranges.append((start_idx, end_idx))
 
     loader.close()
 
     if captured < MIN_FRAMES_PER_VIDEO:
-        warning = (
-            f"Video {task.selection.path.name} yielded {captured} frames inside ROI (skipped {skipped})"
-        )
+        warning = f"Video {task.selection.path.name} yielded {captured} frames inside ROI"
     else:
         warning = ""
 
@@ -308,6 +436,30 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--frame-progress",
         action="store_true",
         help="Show per-frame progress bars (only practical with --workers 1)",
+    )
+    parser.add_argument(
+        "--no-save-frames",
+        action="store_true",
+        help="Skip exporting ROI frame PNGs (only masks will be written)",
+    )
+    parser.add_argument(
+        "--png-compression",
+        type=int,
+        default=3,
+        choices=range(10),
+        help="PNG compression level (0-9, lower is faster)",
+    )
+    parser.add_argument(
+        "--keep-every",
+        type=int,
+        default=1,
+        help="Keep only every Nth frame while the object is inside the ROI",
+    )
+    parser.add_argument(
+        "--scan-step",
+        type=int,
+        default=10,
+        help="Initial scan stride in frames when searching for passes",
     )
     return parser.parse_args(argv)
 
@@ -348,6 +500,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                     output_root=output_root,
                     preset=preset_dict,
                     enable_frame_bar=args.frame_progress and args.workers == 1,
+                    save_frames=not args.no_save_frames,
+                    png_compression=args.png_compression,
+                    keep_every=max(1, args.keep_every),
+                    scan_step=max(1, args.scan_step),
                 )
             )
 

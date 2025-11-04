@@ -41,5 +41,30 @@
     "closing_iterations": 0,
     "min_component_area": 7200,
     "invert_output": false
+  },
+  "OTSU": {
+    "threshold_method": "otsu",
+    "manual_threshold": 127,
+    "pre_blur_kernel": 20,
+    "block_size": 3,
+    "constant_C": 0.0,
+    "niblack_k": -0.2,
+    "sauvola_k": 0.5,
+    "sauvola_r": 128.0,
+    "wolf_k": 0.5,
+    "nick_k": -0.2,
+    "phansalkar_k": 0.25,
+    "phansalkar_p": 3.0,
+    "phansalkar_q": 10.0,
+    "roi_left_pct": 0.2,
+    "roi_right_pct": 0.2,
+    "expand_mask": false,
+    "expand_kernel": 25,
+    "expand_iterations": 5,
+    "use_closing": false,
+    "closing_kernel": 0,
+    "closing_iterations": 0,
+    "min_component_area": 7200,
+    "invert_output": false
   }
 }

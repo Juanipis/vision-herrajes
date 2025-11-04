@@ -22,6 +22,8 @@ from PIL import Image, ImageTk
 
 from ..features.extractor import FEATURE_NAMES, extract_features_from_mask
 from ..processing.pipeline import FilterParameters, FilterPipeline
+from ..submodels.size.features import extract_size_features
+from ..submodels.size.model import SizeModelBundle, load_bundle as load_size_bundle
 
 RESULTS_DIR = Path("results")
 DEFAULT_PRESET_NAME = "PHANSALKAR"
@@ -33,6 +35,16 @@ class ModelBundle:
     scaler: object
     feature_names: Tuple[str, ...]
     classes_: np.ndarray
+
+
+@dataclass
+class SizeModelOption:
+    key: str
+    family: str
+    quality: str
+    path: Path
+    bundle: SizeModelBundle
+    var: tk.BooleanVar
 
 
 def resolve_latest_model() -> Optional[Path]:
@@ -101,18 +113,34 @@ def load_preset(
 
 
 class VideoClassifierApp(tk.Tk):
-    def __init__(self, model_path: Optional[Path], preset_name: Optional[str]) -> None:
+    def __init__(self, model_path: Optional[Path], preset_name: Optional[str], size_preset_name: Optional[str]) -> None:
         super().__init__()
         self.title("Herrajes Classifier")
         self.geometry("1400x720")
 
         self.model_bundle = load_model(model_path)
         params = load_preset(preset_name)
+        size_params = load_preset(size_preset_name) if size_preset_name else None
 
         self._feature_indices = self._compute_feature_indices()
 
         self.pipeline = FilterPipeline()
         self.pipeline.set_parameters(params)
+
+        self._size_pipeline: Optional[FilterPipeline] = None
+        self._size_preset_name = size_preset_name
+        if size_params is not None:
+            size_params.roi_left_pct = 0.0
+            size_params.roi_right_pct = 0.0
+            self._size_pipeline = FilterPipeline()
+            self._size_pipeline.set_parameters(size_params)
+
+        self.main_model_var = tk.BooleanVar(value=True)
+        self.size_result_var = tk.StringVar(value="")
+        self._size_model_options: List[SizeModelOption] = []
+        self._size_model_lookup: Dict[str, List[SizeModelOption]] = {}
+        self._size_models_container: Optional[tk.Widget] = None
+        self._load_size_models()
 
         self.video_capture: Optional[cv2.VideoCapture] = None
         self.video_path: Optional[Path] = None
@@ -135,7 +163,7 @@ class VideoClassifierApp(tk.Tk):
         self._object_present = False
         self._classified_current = False
         self._roi_buffer: deque[np.ndarray] = deque(maxlen=4)
-        self._frame_buffer: deque[Tuple[int, np.ndarray, np.ndarray, np.ndarray]] = deque(maxlen=4)
+        self._frame_buffer: deque[Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = deque(maxlen=4)
         self._classification_executor = ThreadPoolExecutor(max_workers=1)
         self._pending_future = None
         self._current_frame_index = 0
@@ -202,6 +230,8 @@ class VideoClassifierApp(tk.Tk):
         self.proc_canvas = VideoCanvas(views, "Processed mask")
         self.proc_canvas.pack(side="left", padx=5)
 
+        self._build_model_sidebar(views)
+
         self.result_var = tk.StringVar(value="")
         result_label = tk.Label(
             self,
@@ -210,6 +240,14 @@ class VideoClassifierApp(tk.Tk):
             fg="#008000",
         )
         result_label.pack(fill="x", pady=10)
+
+        size_label = tk.Label(
+            self,
+            textvariable=self.size_result_var,
+            font=("Helvetica", 24, "bold"),
+            fg="#0044AA",
+        )
+        size_label.pack(fill="x")
 
         self.warning_var = tk.StringVar(value="")
         warning_label = tk.Label(
@@ -233,6 +271,119 @@ class VideoClassifierApp(tk.Tk):
             indices.append(mapping[name])
         return tuple(indices)
 
+    def _discover_size_model_paths(self) -> List[Tuple[str, str, Path]]:
+        base = RESULTS_DIR / "submodels" / "size"
+        discovered: List[Tuple[str, str, Path]] = []
+        if not base.exists():
+            return discovered
+        for family_dir in sorted(base.iterdir()):
+            if not family_dir.is_dir():
+                continue
+            family = family_dir.name
+            for quality_dir in sorted(family_dir.iterdir()):
+                if not quality_dir.is_dir():
+                    continue
+                quality = quality_dir.name
+                latest = quality_dir / "latest" / "model.joblib"
+                if latest.exists():
+                    discovered.append((family, quality, latest))
+                    continue
+                candidates = sorted(quality_dir.glob("mlp_*/model.joblib"), reverse=True)
+                if candidates:
+                    discovered.append((family, quality, candidates[0]))
+        return discovered
+
+    def _load_size_models(self, previous_states: Optional[Dict[str, bool]] = None) -> None:
+        options: List[SizeModelOption] = []
+        lookup: Dict[str, List[SizeModelOption]] = {}
+        for family, quality, path in self._discover_size_model_paths():
+            try:
+                bundle = load_size_bundle(path)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"[WARN] Failed to load size model {path}: {exc}")
+                continue
+            key = f"{family}:{quality}"
+            initial = True
+            if previous_states and key in previous_states:
+                initial = bool(previous_states[key])
+            var = tk.BooleanVar(value=initial)
+            option = SizeModelOption(
+                key=key,
+                family=family,
+                quality=quality,
+                path=path,
+                bundle=bundle,
+                var=var,
+            )
+            options.append(option)
+            lookup.setdefault(family, []).append(option)
+
+        for family, opts in lookup.items():
+            opts.sort(key=lambda item: (item.quality, item.path.name))
+
+        self._size_model_options = options
+        self._size_model_lookup = lookup
+
+    def _build_model_sidebar(self, parent: tk.Widget) -> None:
+        self.model_sidebar = tk.LabelFrame(parent, text="Models", padx=8, pady=8)
+        self.model_sidebar.pack(side="left", fill="y", padx=5)
+
+        tk.Checkbutton(
+            self.model_sidebar,
+            text="Main family classifier",
+            variable=self.main_model_var,
+        ).pack(anchor="w")
+
+        self._size_models_container = tk.Frame(self.model_sidebar)
+        self._size_models_container.pack(fill="x", pady=(6, 6))
+        self._populate_size_model_toggles()
+
+        if self._size_preset_name:
+            tk.Label(
+                self.model_sidebar,
+                text=f"Size preset: {self._size_preset_name}",
+                fg="#555",
+            ).pack(anchor="w", pady=(4, 0))
+
+        tk.Button(
+            self.model_sidebar,
+            text="Rescan models",
+            command=self._rescan_size_models,
+        ).pack(anchor="center", pady=(6, 0))
+
+    def _populate_size_model_toggles(self) -> None:
+        if self._size_models_container is None:
+            return
+        for child in self._size_models_container.winfo_children():
+            child.destroy()
+
+        if not self._size_model_options:
+            tk.Label(
+                self._size_models_container,
+                text="No size submodels found",
+                fg="#777",
+            ).pack(anchor="w")
+            return
+
+        tk.Label(
+            self._size_models_container,
+            text="Size submodels",
+            font=("Helvetica", 11, "bold"),
+        ).pack(anchor="w")
+
+        for option in self._size_model_options:
+            label = f"{option.family} [{option.quality}]"
+            tk.Checkbutton(
+                self._size_models_container,
+                text=label,
+                variable=option.var,
+            ).pack(anchor="w", padx=4)
+
+    def _rescan_size_models(self) -> None:
+        previous = {opt.key: opt.var.get() for opt in self._size_model_options}
+        self._load_size_models(previous_states=previous)
+        self._populate_size_model_toggles()
+
     def _open_video(self) -> None:
         from tkinter import filedialog
 
@@ -255,6 +406,7 @@ class VideoClassifierApp(tk.Tk):
             return
         self.status_var.set(f"Loaded {self.video_path.name}")
         self.result_var.set("")
+        self.size_result_var.set("")
 
     def _start_playback(self) -> None:
         if self.video_capture is None or not self.video_capture.isOpened():
@@ -317,6 +469,7 @@ class VideoClassifierApp(tk.Tk):
         roi_right = int(width * (1.0 - self.pipeline.parameters.roi_right_pct))
         roi = mask[:, roi_left:roi_right]
         roi_binary = (roi > 0).astype(np.uint8) * 255
+        roi_frame = frame[:, roi_left:roi_right]
 
         self._roi_buffer.append(roi_binary.copy())
         self._frame_buffer.append(
@@ -325,6 +478,7 @@ class VideoClassifierApp(tk.Tk):
                 frame.copy(),
                 mask.copy(),
                 roi_binary.copy(),
+                roi_frame.copy(),
             )
         )
 
@@ -408,11 +562,74 @@ class VideoClassifierApp(tk.Tk):
         self._roi_buffer.clear()
         self._frame_buffer.clear()
 
+    def _run_size_models(
+        self,
+        family: str,
+        rois_batch: List[np.ndarray],
+        frames_batch: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    ) -> Optional[Dict[str, object]]:
+        candidates = [opt for opt in self._size_model_lookup.get(family, []) if opt.var.get()]
+        if not candidates:
+            return None
+        option = candidates[0]
+        bundle = option.bundle
+
+        feature_stack: List[np.ndarray] = []
+        avg_probs: Optional[np.ndarray] = None
+
+        use_size_pipeline = self._size_pipeline is not None
+
+        for idx, roi in enumerate(rois_batch):
+            if use_size_pipeline:
+                _, _, _, _, roi_frame = frames_batch[idx]
+                size_mask = self._size_pipeline.apply(roi_frame)
+            else:
+                size_mask = roi
+
+            fv = extract_size_features(size_mask)
+            ordered = bundle.transform(fv)
+            feature_stack.append(ordered)
+            scaled = bundle.scaler.transform(ordered.reshape(1, -1))
+            probs = bundle.model.predict_proba(scaled)[0]
+            if avg_probs is None:
+                avg_probs = probs.copy()
+            else:
+                avg_probs += probs
+
+        if not feature_stack or avg_probs is None:
+            return None
+
+        avg_probs /= len(feature_stack)
+        best_idx = int(np.argmax(avg_probs))
+        size_label = bundle.size_labels[best_idx]
+        confidence = float(avg_probs[best_idx])
+
+        avg_vector = np.mean(np.stack(feature_stack, axis=0), axis=0)
+        print("=== Size Features (avg of last 4) ===")
+        for name, val in zip(bundle.feature_names, avg_vector.tolist()):
+            print(f"{name:>26}: {val:+.6f}")
+        print("======================\n")
+
+        return {
+            "label": str(size_label),
+            "confidence": confidence,
+            "probabilities": avg_probs.tolist(),
+            "family": family,
+            "quality": option.quality,
+            "option_key": option.key,
+            "model_path": str(option.path),
+        }
+
     def _classify_batch(
         self,
         rois_batch: List[np.ndarray],
-        frames_batch: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray]],
+        frames_batch: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
     ) -> Dict[str, object]:
+        touching = self._is_touching_border(frames_batch[-1][2])
+
+        if not self.main_model_var.get():
+            return {"label": None, "confidence": None, "touching_border": touching, "size": None}
+
         features_batch: List[np.ndarray] = []
         for roi in rois_batch:
             fv = extract_features_from_mask(roi)
@@ -440,15 +657,20 @@ class VideoClassifierApp(tk.Tk):
         assert avg_probs is not None
         avg_probs /= len(features_batch)
 
-        # no heuristic suppression; rely on model output directly
         best_idx = int(np.argmax(avg_probs))
-        label = self.model_bundle.classes_[best_idx]
+        label = str(self.model_bundle.classes_[best_idx])
         confidence = float(avg_probs[best_idx])
         print("Prediction:", label, "Confidence:", f"{confidence:.4f}")
         print("======================\n")
 
-        touching = self._is_touching_border(frames_batch[-1][2])
-        return {"label": label, "confidence": confidence, "touching_border": touching}
+        size_result = self._run_size_models(label, rois_batch, frames_batch)
+
+        return {
+            "label": label,
+            "confidence": confidence,
+            "touching_border": touching,
+            "size": size_result,
+        }
 
     def _is_touching_border(self, mask: np.ndarray) -> bool:
         if mask is None or mask.size == 0:
@@ -463,7 +685,31 @@ class VideoClassifierApp(tk.Tk):
     def _handle_classification_result(self, result: Dict[str, object]) -> None:
         if not result:
             return
-        self.result_var.set(f"{result['label'].upper()} ({result['confidence']:.2f})")
+        label = result.get("label")
+        confidence = result.get("confidence")
+        if label:
+            label_text = str(label).upper()
+            if isinstance(confidence, (float, int)):
+                label_text = f"{label_text} ({confidence:.2f})"
+            self.result_var.set(label_text)
+        else:
+            self.result_var.set("")
+
+        size_info = result.get("size") if isinstance(result, dict) else None
+        if isinstance(size_info, dict):
+            size_label = size_info.get("label")
+            size_conf = size_info.get("confidence")
+            quality = size_info.get("quality")
+            if size_label is not None and size_conf is not None:
+                text = f"Size {size_label} ({float(size_conf):.2f})"
+                if quality:
+                    text += f" [{quality}]"
+                self.size_result_var.set(text)
+            else:
+                self.size_result_var.set("")
+        else:
+            self.size_result_var.set("")
+
         if result.get("touching_border"):
             self.warning_var.set("WARNING: Object touching border")
         else:
@@ -573,22 +819,21 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_PRESET_NAME,
         help="Preset name in config/filter_presets.json",
     )
+    parser.add_argument(
+        "--size-preset",
+        type=str,
+        default=None,
+        help="Optional preset to run size submodels (defaults to main preset)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    app = VideoClassifierApp(model_path=args.model, preset_name=args.preset)
+    size_preset = args.size_preset or args.preset
+    app = VideoClassifierApp(model_path=args.model, preset_name=args.preset, size_preset_name=size_preset)
     app.mainloop()
 
 
 if __name__ == "__main__":
     main()
-    def _is_touching_border(self, mask: np.ndarray) -> bool:
-        if mask is None or mask.size == 0:
-            return False
-        rows, cols = mask.shape[:2]
-        border_pixels = np.concatenate(
-            [mask[0, :], mask[rows - 1, :], mask[:, 0], mask[:, cols - 1]]
-        )
-        return np.any(border_pixels > 0)
