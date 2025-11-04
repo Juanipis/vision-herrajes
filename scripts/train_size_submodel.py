@@ -30,6 +30,8 @@ def normalise_qualities(qualities: Sequence[str]) -> List[str]:
     if not qualities:
         return ["BUENO"]
     norm = {q.upper() for q in qualities if q}
+    if "*" in norm:
+        return ["ALL"]
     if "ALL" in norm:
         return ["ALL"]
     return sorted(norm)
