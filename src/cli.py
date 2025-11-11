@@ -34,3 +34,9 @@ def run_classify_camera() -> None:
         camera_viewer_main,
         ["--preset", "PHANSALKAR", "--size-preset", "OTSU"],
     )
+
+
+def run_tuner() -> None:
+    from .gui.video_tuner import run as tuner_run
+
+    tuner_run()

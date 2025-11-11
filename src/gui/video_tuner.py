@@ -27,6 +27,10 @@ class VideoTunerApp(tk.Tk):
         self.pipeline = FilterPipeline()
         self._presets: Dict[str, Dict[str, object]] = {}
         self._active_preset: Optional[str] = None
+        self._camera_capture: Optional[cv2.VideoCapture] = None
+        self._camera_index: Optional[int] = None
+        self._camera_fps: float = 30.0
+        self._source_mode: str = "video"  # "video" or "camera"
 
         self._current_frame_index = 0
         self._playback_job: Optional[str] = None
@@ -41,6 +45,7 @@ class VideoTunerApp(tk.Tk):
 
         self._build_ui()
         self._load_presets()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # UI -----------------------------------------------------------------
 
@@ -52,6 +57,7 @@ class VideoTunerApp(tk.Tk):
         controls.pack(fill="x", pady=(0, 6))
 
         tk.Button(controls, text="Open", command=self._open_video_dialog).pack(side="left", padx=2)
+        tk.Button(controls, text="Camera", command=self._connect_camera_dialog).pack(side="left", padx=2)
         tk.Button(controls, text="Play", command=self.play).pack(side="left", padx=2)
         tk.Button(controls, text="Pause", command=self.pause).pack(side="left", padx=2)
         tk.Button(controls, text="Prev", command=lambda: self.seek_relative(-1)).pack(side="left", padx=2)
@@ -183,6 +189,7 @@ class VideoTunerApp(tk.Tk):
     # Video interaction ---------------------------------------------------
 
     def _open_video_dialog(self) -> None:
+        self._release_camera()
         file_path = filedialog.askopenfilename(
             parent=self,
             title="Select a video",
@@ -200,6 +207,7 @@ class VideoTunerApp(tk.Tk):
             return
         self.pipeline.reset_state()
         self._current_frame_index = 0
+        self._source_mode = "video"
         self._set_timeline_range(properties.frame_count)
         self._set_timeline_value(0, emit=False)
         self._status_header = (
@@ -208,13 +216,58 @@ class VideoTunerApp(tk.Tk):
         self.status_var.set(self._status_header)
         self._render_current_frame()
 
+    def _connect_camera_dialog(self) -> None:
+        index = simpledialog.askinteger(
+            "Camera index",
+            "Enter camera index",
+            parent=self,
+            minvalue=0,
+            initialvalue=self._camera_index or 0,
+        )
+        if index is None:
+            return
+        self._connect_camera(index)
+
+    def _connect_camera(self, index: int) -> None:
+        self._release_camera()
+        capture = cv2.VideoCapture(index)
+        if not capture.isOpened():
+            capture.release()
+            messagebox.showerror("Camera error", f"Failed to open camera {index}", parent=self)
+            return
+        fps = capture.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 1:
+            fps = 30.0
+        self._camera_capture = capture
+        self._camera_index = index
+        self._camera_fps = float(fps)
+        self._source_mode = "camera"
+        self.pipeline.reset_state()
+        self._current_frame_index = 0
+        self._set_timeline_range(0)
+        self._status_header = f"Camera {index} (live)"
+        self.status_var.set(self._status_header)
+        self.play()
+
+    def _release_camera(self) -> None:
+        if self._camera_capture is not None:
+            self._camera_capture.release()
+            self._camera_capture = None
+        self._camera_index = None
+
+    def _using_camera(self) -> bool:
+        return self._camera_capture is not None and self._source_mode == "camera"
+
     def play(self) -> None:
         if self._playback_job is not None:
             return
-        try:
-            fps = self.loader.properties.fps
-        except VideoLoaderError:
-            return
+        if self._using_camera():
+            fps = self._camera_fps
+        else:
+            try:
+                fps = self.loader.properties.fps
+            except VideoLoaderError:
+                return
         interval = int(max(1, round(1000.0 / max(1.0, fps))))
         self._playback_job = self.after(interval, self._advance_frame)
 
@@ -224,6 +277,8 @@ class VideoTunerApp(tk.Tk):
             self._playback_job = None
 
     def seek_relative(self, offset: int) -> None:
+        if self._using_camera():
+            return
         try:
             frame_count = self.loader.properties.frame_count
         except VideoLoaderError:
@@ -234,18 +289,21 @@ class VideoTunerApp(tk.Tk):
         self._render_current_frame()
 
     def _advance_frame(self) -> None:
-        try:
-            frame_count = self.loader.properties.frame_count
-        except VideoLoaderError:
-            self.pause()
-            return
-        self._current_frame_index += 1
-        if self._current_frame_index >= frame_count:
-            self._current_frame_index = frame_count - 1
-            self.pause()
-            return
-        self._set_timeline_value(self._current_frame_index, emit=False)
-        self._render_current_frame()
+        if self._using_camera():
+            self._render_current_frame()
+        else:
+            try:
+                frame_count = self.loader.properties.frame_count
+            except VideoLoaderError:
+                self.pause()
+                return
+            self._current_frame_index += 1
+            if self._current_frame_index >= frame_count:
+                self._current_frame_index = frame_count - 1
+                self.pause()
+                return
+            self._set_timeline_value(self._current_frame_index, emit=False)
+            self._render_current_frame()
         self._playback_job = None
         self.play()
 
@@ -258,6 +316,8 @@ class VideoTunerApp(tk.Tk):
         self.timeline_scale.configure(state="normal", from_=0, to=max(0, frame_count - 1))
 
     def _set_timeline_value(self, value: int, emit: bool = True) -> None:
+        if self._using_camera():
+            return
         self._ignore_scale_events = True
         self.timeline_scale.set(value)
         self._ignore_scale_events = False
@@ -265,6 +325,8 @@ class VideoTunerApp(tk.Tk):
             self._on_slider_command(str(value))
 
     def _on_slider_command(self, value: str) -> None:
+        if self._using_camera():
+            return
         if self._ignore_scale_events:
             return
         index = int(float(value))
@@ -273,10 +335,14 @@ class VideoTunerApp(tk.Tk):
             self._render_current_frame()
 
     def _on_slider_pressed(self, _event) -> None:
+        if self._using_camera():
+            return
         self._scrubbing = True
         self.pause()
 
     def _on_slider_released(self, _event) -> None:
+        if self._using_camera():
+            return
         self._scrubbing = False
         self._current_frame_index = int(self.timeline_scale.get())
         self._render_current_frame()
@@ -285,9 +351,11 @@ class VideoTunerApp(tk.Tk):
 
     def _render_current_frame(self) -> None:
         try:
-            frame = self.loader.read_frame(self._current_frame_index)
+            frame = self._read_current_frame()
         except VideoLoaderError as exc:
             self.status_var.set(f"Frame error: {exc}")
+            if self._using_camera():
+                self.pause()
             return
         params = self.pipeline.parameters
         processed = self.pipeline.apply(frame)
@@ -296,13 +364,27 @@ class VideoTunerApp(tk.Tk):
         cropped_processed = self._crop_to_roi(display_processed, params)
         self.original_view.update_image(cropped_frame)
         self.processed_view.update_image(cropped_processed)
-        try:
-            frame_count = self.loader.properties.frame_count
-        except VideoLoaderError:
-            frame_count = 0
-        self.status_var.set(
-            f"{self._status_header} | Frame {self._current_frame_index + 1}/{frame_count}"
-        )
+        if self._using_camera():
+            self.status_var.set(f"{self._status_header} | Frame {self._current_frame_index}")
+        else:
+            try:
+                frame_count = self.loader.properties.frame_count
+            except VideoLoaderError:
+                frame_count = 0
+            self.status_var.set(
+                f"{self._status_header} | Frame {self._current_frame_index + 1}/{frame_count}"
+            )
+
+    def _read_current_frame(self) -> np.ndarray:
+        if self._using_camera():
+            if self._camera_capture is None:
+                raise VideoLoaderError("No camera connected")
+            success, frame = self._camera_capture.read()
+            if not success or frame is None:
+                raise VideoLoaderError("Failed to read from camera")
+            self._current_frame_index += 1
+            return frame
+        return self.loader.read_frame(self._current_frame_index)
 
     # Parameter handling -------------------------------------------------
 
@@ -379,6 +461,11 @@ class VideoTunerApp(tk.Tk):
         if hole_contours:
             cv2.drawContours(color, hole_contours, -1, (0, 255, 0), self._contour_thickness)
         return color
+
+    def _on_close(self) -> None:
+        self.pause()
+        self._release_camera()
+        self.destroy()
 
 
 def run() -> None:

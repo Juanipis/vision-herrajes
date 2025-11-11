@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 classify = "src.cli:run_classify"
 "classify-camera" = "src.cli:run_classify_camera"
+"tune-gui" = "src.cli:run_tuner"
 
 [tool.uv.sources]
 vision-defect-detection = { path = "vision_defect_detection-0.1.0-py3-none-any.whl" }
