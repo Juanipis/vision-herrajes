@@ -1,0 +1,169 @@
+{
+  "train": {
+    "accuracy": 1.0,
+    "report": {
+      "anillo": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 197.0
+      },
+      "dobleanillo": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 197.0
+      },
+      "gancho": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 198.0
+      },
+      "ocho": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 185.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 777.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 777.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        197,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        197,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        198,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        185
+      ]
+    ]
+  },
+  "validation": {
+    "accuracy": 1.0,
+    "report": {
+      "anillo": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 50.0
+      },
+      "dobleanillo": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 49.0
+      },
+      "gancho": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 50.0
+      },
+      "ocho": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 46.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 195.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 195.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        50,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        49,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        50,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        46
+      ]
+    ]
+  },
+  "labels": [
+    "anillo",
+    "dobleanillo",
+    "gancho",
+    "ocho"
+  ],
+  "feature_names": [
+    "hu_1",
+    "hu_2",
+    "hu_3",
+    "hu_4",
+    "hu_5",
+    "hu_6",
+    "hu_7",
+    "fd_1",
+    "fd_2",
+    "fd_3",
+    "fd_4",
+    "fd_5",
+    "fd_6",
+    "fd_7",
+    "fd_8",
+    "fd_9",
+    "fd_10",
+    "holes",
+    "radial_std",
+    "radial_min",
+    "radial_max",
+    "skeleton_endpoints",
+    "skeleton_junctions"
+  ]
+}

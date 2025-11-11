@@ -1,0 +1,129 @@
+{
+  "train": {
+    "accuracy": 1.0,
+    "report": {
+      "T2": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 961.0
+      },
+      "T3": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 796.0
+      },
+      "T4": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 110.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1867.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1867.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        961,
+        0,
+        0
+      ],
+      [
+        0,
+        796,
+        0
+      ],
+      [
+        0,
+        0,
+        110
+      ]
+    ]
+  },
+  "validation": {
+    "accuracy": 1.0,
+    "report": {
+      "T2": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 240.0
+      },
+      "T3": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 199.0
+      },
+      "T4": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 28.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 467.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 467.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        240,
+        0,
+        0
+      ],
+      [
+        0,
+        199,
+        0
+      ],
+      [
+        0,
+        0,
+        28
+      ]
+    ]
+  },
+  "family": "gancho",
+  "qualities": [
+    "ALL"
+  ],
+  "seed": 42,
+  "hidden_layers": [
+    64,
+    32
+  ],
+  "dataset": "data/submodels/size/gancho/all/dataset.npz",
+  "feature_names": [
+    "outer_area_px",
+    "outer_equiv_diameter_px",
+    "hole_equiv_diameter_mean_px",
+    "thickness_mean_px"
+  ],
+  "size_labels": [
+    "T2",
+    "T3",
+    "T4"
+  ]
+}

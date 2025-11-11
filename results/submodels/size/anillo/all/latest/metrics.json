@@ -1,0 +1,129 @@
+{
+  "train": {
+    "accuracy": 1.0,
+    "report": {
+      "T1": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 854.0
+      },
+      "T2": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 458.0
+      },
+      "T3": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 416.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1728.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1728.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        854,
+        0,
+        0
+      ],
+      [
+        0,
+        458,
+        0
+      ],
+      [
+        0,
+        0,
+        416
+      ]
+    ]
+  },
+  "validation": {
+    "accuracy": 1.0,
+    "report": {
+      "T1": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 214.0
+      },
+      "T2": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 114.0
+      },
+      "T3": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 104.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 432.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 432.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        214,
+        0,
+        0
+      ],
+      [
+        0,
+        114,
+        0
+      ],
+      [
+        0,
+        0,
+        104
+      ]
+    ]
+  },
+  "family": "anillo",
+  "qualities": [
+    "ALL"
+  ],
+  "seed": 42,
+  "hidden_layers": [
+    64,
+    32
+  ],
+  "dataset": "data/submodels/size/anillo/all/dataset.npz",
+  "feature_names": [
+    "outer_area_px",
+    "outer_equiv_diameter_px",
+    "hole_equiv_diameter_mean_px",
+    "thickness_mean_px"
+  ],
+  "size_labels": [
+    "T1",
+    "T2",
+    "T3"
+  ]
+}

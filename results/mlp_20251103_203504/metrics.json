@@ -1,0 +1,180 @@
+{
+  "train": {
+    "accuracy": 1.0,
+    "report": {
+      "anillo": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1728.0
+      },
+      "dobleanillo": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1540.0
+      },
+      "gancho": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1868.0
+      },
+      "ocho": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1030.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 6166.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 6166.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        1728,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        1540,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1868,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1030
+      ]
+    ]
+  },
+  "validation": {
+    "accuracy": 0.9993514915693904,
+    "report": {
+      "anillo": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 432.0
+      },
+      "dobleanillo": {
+        "precision": 1.0,
+        "recall": 0.9974025974025974,
+        "f1-score": 0.9986996098829649,
+        "support": 385.0
+      },
+      "gancho": {
+        "precision": 0.9978632478632479,
+        "recall": 1.0,
+        "f1-score": 0.9989304812834224,
+        "support": 467.0
+      },
+      "ocho": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 258.0
+      },
+      "accuracy": 0.9993514915693904,
+      "macro avg": {
+        "precision": 0.999465811965812,
+        "recall": 0.9993506493506493,
+        "f1-score": 0.9994075227915968,
+        "support": 1542.0
+      },
+      "weighted avg": {
+        "precision": 0.9993528772711652,
+        "recall": 0.9993514915693904,
+        "f1-score": 0.9993514167083657,
+        "support": 1542.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        432,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        384,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        467,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        258
+      ]
+    ]
+  },
+  "labels": [
+    "anillo",
+    "dobleanillo",
+    "gancho",
+    "ocho"
+  ],
+  "feature_names": [
+    "hu_1",
+    "hu_2",
+    "hu_3",
+    "hu_4",
+    "hu_5",
+    "hu_6",
+    "hu_7",
+    "fd_1",
+    "fd_2",
+    "fd_3",
+    "fd_4",
+    "fd_5",
+    "fd_6",
+    "fd_7",
+    "fd_8",
+    "fd_9",
+    "fd_10",
+    "hole_count",
+    "radial_std",
+    "radial_min",
+    "radial_max",
+    "skeleton_endpoints",
+    "skeleton_junctions",
+    "skeleton_branch_count",
+    "skeleton_branch_mean",
+    "skeleton_branch_std",
+    "skeleton_branch_max",
+    "skeleton_cycle_count",
+    "skeleton_cycle_mean_length",
+    "skeleton_cycle_node_ratio",
+    "hole_ar_mean",
+    "hole_ar_std",
+    "hole_ecc_mean",
+    "hole_centroid_ar"
+  ]
+}

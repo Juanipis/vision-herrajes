@@ -1,0 +1,79 @@
+{
+  "train": {
+    "accuracy": 1.0,
+    "report": {
+      "T1": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1030.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1030.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1030.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        1030
+      ]
+    ]
+  },
+  "validation": {
+    "accuracy": 1.0,
+    "report": {
+      "T1": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 258.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 258.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 258.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        258
+      ]
+    ]
+  },
+  "family": "ocho",
+  "qualities": [
+    "ALL"
+  ],
+  "seed": 42,
+  "hidden_layers": [
+    64,
+    32
+  ],
+  "dataset": "data/submodels/size/ocho/all/dataset.npz",
+  "feature_names": [
+    "outer_area_px",
+    "outer_equiv_diameter_px",
+    "hole_equiv_diameter_mean_px",
+    "thickness_mean_px"
+  ],
+  "size_labels": [
+    "T1"
+  ]
+}
