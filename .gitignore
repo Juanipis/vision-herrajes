@@ -133,8 +133,6 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
-# Project specific
-*.joblib
 
 # folder data and train
 data/
