@@ -81,6 +81,5 @@ typing-extensions==4.15.0
 ultralytics==8.3.220
 ultralytics-thop==2.0.17
 urllib3==2.5.0
-uvloop==0.22.1
 wcwidth==0.2.14
 widgetsnbextension==4.0.14

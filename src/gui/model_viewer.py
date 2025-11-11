@@ -20,6 +20,8 @@ import joblib
 import numpy as np
 from PIL import Image, ImageTk
 
+from vision_defect_detection import load_default_detector, predict_image
+
 from ..features.extractor import FEATURE_NAMES, extract_features_from_mask
 from ..processing.pipeline import FilterParameters, FilterPipeline
 from ..submodels.size.features import extract_size_features
@@ -121,11 +123,14 @@ class VideoClassifierApp(tk.Tk):
         self.model_bundle = load_model(model_path)
         params = load_preset(preset_name)
         size_params = load_preset(size_preset_name) if size_preset_name else None
+        otsu_params = load_preset("OTSU")
 
         self._feature_indices = self._compute_feature_indices()
 
         self.pipeline = FilterPipeline()
         self.pipeline.set_parameters(params)
+        self._otsu_pipeline = FilterPipeline()
+        self._otsu_pipeline.set_parameters(otsu_params)
 
         self._size_pipeline: Optional[FilterPipeline] = None
         self._size_preset_name = size_preset_name
@@ -137,10 +142,18 @@ class VideoClassifierApp(tk.Tk):
 
         self.main_model_var = tk.BooleanVar(value=True)
         self.size_result_var = tk.StringVar(value="")
+        self.defect_detector_var = tk.BooleanVar(value=True)
+        self.defect_result_var = tk.StringVar(value="")
+        self._defect_label_widget: Optional[tk.Label] = None
+        self._defect_label_neutral_fg = "#AA8800"
+        self._defect_detector = None
+        self._defect_detector_lock = threading.Lock()
+        self._defect_warmup_started = False
         self._size_model_options: List[SizeModelOption] = []
         self._size_model_lookup: Dict[str, List[SizeModelOption]] = {}
         self._size_models_container: Optional[tk.Widget] = None
         self._load_size_models()
+        self._start_defect_warmup()
 
         self.video_capture: Optional[cv2.VideoCapture] = None
         self.video_path: Optional[Path] = None
@@ -167,17 +180,23 @@ class VideoClassifierApp(tk.Tk):
         self._classification_executor = ThreadPoolExecutor(max_workers=1)
         self._pending_future = None
         self._current_frame_index = 0
+        self._current_frame: Optional[np.ndarray] = None
+        self._current_processed: Optional[np.ndarray] = None
+        self._current_otsu: Optional[np.ndarray] = None
 
+        self._post_setup()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _post_setup(self) -> None:
+        """Extension hook for subclasses to prepare state before building widgets."""
+        return
 
     def _build_ui(self) -> None:
         control_bar = tk.Frame(self)
         control_bar.pack(fill="x", padx=10, pady=10)
 
-        tk.Button(control_bar, text="Open", command=self._open_video).pack(
-            side="left", padx=4
-        )
+        self._build_source_controls(control_bar)
         tk.Button(control_bar, text="Play", command=self._start_playback).pack(
             side="left", padx=4
         )
@@ -230,6 +249,9 @@ class VideoClassifierApp(tk.Tk):
         self.proc_canvas = VideoCanvas(views, "Processed mask")
         self.proc_canvas.pack(side="left", padx=5)
 
+        self.otsu_canvas = VideoCanvas(views, "OTSU mask")
+        self.otsu_canvas.pack(side="left", padx=5)
+
         self._build_model_sidebar(views)
 
         self.result_var = tk.StringVar(value="")
@@ -249,6 +271,14 @@ class VideoClassifierApp(tk.Tk):
         )
         size_label.pack(fill="x")
 
+        self._defect_label_widget = tk.Label(
+            self,
+            textvariable=self.defect_result_var,
+            font=("Helvetica", 20, "bold"),
+            fg=self._defect_label_neutral_fg,
+        )
+        self._defect_label_widget.pack(fill="x", pady=(4, 0))
+
         self.warning_var = tk.StringVar(value="")
         warning_label = tk.Label(
             self,
@@ -259,6 +289,11 @@ class VideoClassifierApp(tk.Tk):
         warning_label.pack(fill="x")
 
         self._update_contour_params()
+
+    def _build_source_controls(self, control_bar: tk.Frame) -> None:
+        tk.Button(control_bar, text="Open", command=self._open_video).pack(
+            side="left", padx=4
+        )
 
     def _compute_feature_indices(self) -> Tuple[int, ...]:
         if not self.model_bundle.feature_names:
@@ -334,6 +369,13 @@ class VideoClassifierApp(tk.Tk):
             variable=self.main_model_var,
         ).pack(anchor="w")
 
+        tk.Checkbutton(
+            self.model_sidebar,
+            text="Defect detector",
+            variable=self.defect_detector_var,
+            command=self._handle_defect_toggle,
+        ).pack(anchor="w")
+
         self._size_models_container = tk.Frame(self.model_sidebar)
         self._size_models_container.pack(fill="x", pady=(6, 6))
         self._populate_size_model_toggles()
@@ -378,6 +420,45 @@ class VideoClassifierApp(tk.Tk):
                 text=label,
                 variable=option.var,
             ).pack(anchor="w", padx=4)
+
+    def _handle_defect_toggle(self) -> None:
+        if self.defect_detector_var.get():
+            self._start_defect_warmup()
+        else:
+            self.defect_result_var.set("")
+            if self._defect_label_widget is not None:
+                self._defect_label_widget.config(fg=self._defect_label_neutral_fg)
+
+    def _start_defect_warmup(self) -> None:
+        if not self.defect_detector_var.get():
+            return
+        if self._defect_detector is not None:
+            return
+        if self._defect_warmup_started:
+            return
+        self._defect_warmup_started = True
+        threading.Thread(target=self._warm_up_defect_detector, daemon=True).start()
+
+    def _warm_up_defect_detector(self) -> None:
+        detector = self._ensure_defect_detector()
+        if detector is None:
+            self._defect_warmup_started = False
+        else:
+            print("[INFO] Defect detector warmed up")
+
+    def _ensure_defect_detector(self):
+        if self._defect_detector is not None:
+            return self._defect_detector
+        with self._defect_detector_lock:
+            if self._defect_detector is not None:
+                return self._defect_detector
+            try:
+                detector = load_default_detector()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"[WARN] Unable to load defect detector: {exc}")
+                return None
+            self._defect_detector = detector
+            return detector
 
     def _rescan_size_models(self) -> None:
         previous = {opt.key: opt.var.get() for opt in self._size_model_options}
@@ -429,6 +510,7 @@ class VideoClassifierApp(tk.Tk):
         cap = self.video_capture
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.pipeline.reset_state()
+        self._otsu_pipeline.reset_state()
         frame_idx = 0
         while not self._stop_event.is_set():
             success, frame = cap.read()
@@ -452,13 +534,11 @@ class VideoClassifierApp(tk.Tk):
             self.after(16, self._update_display)
             return
         self._current_frame_index = idx
+        self._current_frame = frame
+        self._current_processed = processed
+        self._current_otsu = self._compute_otsu_mask(frame)
 
-        self.raw_canvas.update_image(frame)
-        if self._show_contours:
-            display_processed = self._apply_contour_overlay(processed)
-            self.proc_canvas.update_image(display_processed, is_mask=False)
-        else:
-            self.proc_canvas.update_image(processed, is_mask=True)
+        self._render_current_frame()
         self._maybe_classify(frame, processed)
 
         self.after(16, self._update_display)
@@ -541,6 +621,25 @@ class VideoClassifierApp(tk.Tk):
                 pass
         self._render_current_frame()
 
+    def _render_current_frame(self) -> None:
+        if self._current_frame is None or self._current_processed is None:
+            return
+        self.raw_canvas.update_image(self._current_frame)
+        if self._show_contours:
+            display_processed = self._apply_contour_overlay(self._current_processed)
+            self.proc_canvas.update_image(display_processed, is_mask=False)
+        else:
+            self.proc_canvas.update_image(self._current_processed, is_mask=True)
+        if self._current_otsu is not None:
+            self.otsu_canvas.update_image(self._current_otsu, is_mask=True)
+
+    def _compute_otsu_mask(
+        self, frame: np.ndarray
+    ) -> Optional[np.ndarray]:
+        if frame is None or frame.size == 0:
+            return None
+        return self._otsu_pipeline.apply(frame)
+
     def _update_contour_params(self) -> None:
         self._contour_offset = max(0, int(self._contour_offset_var.get()))
         self._contour_thickness = max(1, int(self._contour_thickness_var.get()))
@@ -551,11 +650,13 @@ class VideoClassifierApp(tk.Tk):
         rois_batch = list(self._roi_buffer)
         frames_batch = list(self._frame_buffer)
         self._last_prediction_time = time.time()
+        use_defect_detector = bool(self.defect_detector_var.get())
 
         future = self._classification_executor.submit(
             self._classify_batch,
             rois_batch,
             frames_batch,
+            use_defect_detector,
         )
         self._pending_future = future
         future.add_done_callback(lambda fut: self.after(0, self._handle_classification_result, fut.result()))
@@ -578,13 +679,29 @@ class VideoClassifierApp(tk.Tk):
         avg_probs: Optional[np.ndarray] = None
 
         use_size_pipeline = self._size_pipeline is not None
+        otsu_cache: Dict[int, np.ndarray] = {}
+        otsu_params = self._otsu_pipeline.parameters
 
         for idx, roi in enumerate(rois_batch):
+            frame_idx, full_frame, _, _, roi_frame = frames_batch[idx]
             if use_size_pipeline:
-                _, _, _, _, roi_frame = frames_batch[idx]
                 size_mask = self._size_pipeline.apply(roi_frame)
             else:
-                size_mask = roi
+                if frame_idx not in otsu_cache:
+                    otsu_cache[frame_idx] = self._otsu_pipeline.apply(full_frame)
+                size_mask_full = otsu_cache.get(frame_idx)
+                if size_mask_full is None:
+                    size_mask = roi
+                else:
+                    height, width = size_mask_full.shape[:2]
+                    left = int(width * otsu_params.roi_left_pct)
+                    right = int(width * (1.0 - otsu_params.roi_right_pct))
+                    left = max(0, min(left, width - 1))
+                    right = max(left + 1, min(width, right))
+                    if right <= left:
+                        size_mask = size_mask_full
+                    else:
+                        size_mask = size_mask_full[:, left:right]
 
             fv = extract_size_features(size_mask)
             ordered = bundle.transform(fv)
@@ -620,10 +737,48 @@ class VideoClassifierApp(tk.Tk):
             "model_path": str(option.path),
         }
 
+    def _compute_defect_prediction(
+        self,
+        use_defect_detector: bool,
+        family_label: Optional[str],
+        size_result: Optional[Dict[str, object]],
+        frames_batch: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    ) -> Optional[Dict[str, object]]:
+        if not use_defect_detector:
+            return None
+        if not family_label:
+            return {"error": "Family prediction unavailable"}
+        size_label = None
+        if size_result and size_result.get("label") is not None:
+            size_label = str(size_result["label"])
+        if not size_label:
+            return {"error": "Size prediction unavailable"}
+        if not frames_batch:
+            return {"error": "No frame data"}
+        _, last_frame, *_ = frames_batch[-1]
+        if last_frame is None or last_frame.size == 0:
+            return {"error": "Empty frame"}
+        detector = self._ensure_defect_detector()
+        if detector is None:
+            return {"error": "Defect detector unavailable"}
+        try:
+            detection = predict_image(
+                last_frame,
+                piece_type=str(family_label),
+                size=size_label,
+                detector=detector,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"[WARN] Defect detector failed: {exc}")
+            return {"error": str(exc)}
+        detection["frame_index"] = frames_batch[-1][0]
+        return detection
+
     def _classify_batch(
         self,
         rois_batch: List[np.ndarray],
         frames_batch: List[Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+        use_defect_detector: bool = False,
     ) -> Dict[str, object]:
         touching = self._is_touching_border(frames_batch[-1][2])
 
@@ -664,12 +819,19 @@ class VideoClassifierApp(tk.Tk):
         print("======================\n")
 
         size_result = self._run_size_models(label, rois_batch, frames_batch)
+        defect_result = self._compute_defect_prediction(
+            use_defect_detector,
+            label,
+            size_result,
+            frames_batch,
+        )
 
         return {
             "label": label,
             "confidence": confidence,
             "touching_border": touching,
             "size": size_result,
+            "defect": defect_result,
         }
 
     def _is_touching_border(self, mask: np.ndarray) -> bool:
@@ -710,10 +872,38 @@ class VideoClassifierApp(tk.Tk):
         else:
             self.size_result_var.set("")
 
+        self._update_defect_display(result.get("defect"))
+
         if result.get("touching_border"):
             self.warning_var.set("WARNING: Object touching border")
         else:
             self.warning_var.set("")
+
+    def _update_defect_display(self, defect_info: Optional[Dict[str, object]]) -> None:
+        if self._defect_label_widget is None:
+            return
+        if isinstance(defect_info, dict):
+            error_message = defect_info.get("error")
+            if error_message:
+                self.defect_result_var.set(f"Defect detector: {error_message}")
+                self._defect_label_widget.config(fg="#C77C04")
+                return
+            label = defect_info.get("label")
+            confidence = defect_info.get("confidence")
+            if label:
+                text = f"Defect: {label}"
+                if isinstance(confidence, (float, int)):
+                    text += f" ({float(confidence):.2f})"
+                features = defect_info.get("features")
+                if isinstance(features, dict):
+                    text += f" · {len(features)} feats"
+                normalized_label = str(label).strip().upper()
+                color = "#14833B" if normalized_label == "BUENO" else "#C62828"
+                self._defect_label_widget.config(fg=color)
+                self.defect_result_var.set(text)
+                return
+        self.defect_result_var.set("")
+        self._defect_label_widget.config(fg=self._defect_label_neutral_fg)
 
     def _on_close(self) -> None:
         self._stop_playback()
@@ -769,11 +959,12 @@ class VideoClassifierApp(tk.Tk):
 
 class VideoCanvas(tk.Frame):
     def __init__(
-        self, master: tk.Widget, title: str, width: int = 640, height: int = 480
+        self, master: tk.Widget, title: str, width: int = 480, height: int = 270
     ) -> None:
         super().__init__(master)
         self._width = width
         self._height = height
+        self._aspect_ratio = width / height if height else 1.7777778
         tk.Label(self, text=title, font=("Helvetica", 12, "bold")).pack()
         self._canvas = tk.Canvas(
             self,
@@ -788,16 +979,27 @@ class VideoCanvas(tk.Frame):
     def update_image(self, frame: np.ndarray, is_mask: bool = False) -> None:
         if frame is None or frame.size == 0:
             return
+        frame_height, frame_width = frame.shape[:2]
+        if frame_height == 0 or frame_width == 0:
+            return
+        frame_aspect = frame_width / frame_height
+        if frame_aspect > self._aspect_ratio:
+            target_width = self._width
+            target_height = max(1, int(round(self._width / frame_aspect)))
+        else:
+            target_height = self._height
+            target_width = max(1, int(round(self._height * frame_aspect)))
         if frame.ndim == 2:
             image = Image.fromarray(frame)
         else:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(rgb)
         image = image.resize(
-            (self._width, self._height), Image.NEAREST if is_mask else Image.BILINEAR
+            (target_width, target_height), Image.NEAREST if is_mask else Image.BILINEAR
         )
         self._photo = ImageTk.PhotoImage(image=image)
         self._canvas.delete("all")
+        self._canvas.create_rectangle(0, 0, self._width, self._height, fill="#000000", outline="")
         self._canvas.create_image(
             self._width // 2, self._height // 2, image=self._photo
         )

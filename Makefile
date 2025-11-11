@@ -7,7 +7,7 @@ PYTHON := $(VENV)/bin/python
 UV := $(VENV)/bin/uv
 REQ_PKGS := opencv-python pillow av tqdm scikit-image scikit-learn scipy joblib
 
-.PHONY: help gui preview install-deps dataset submodel-base train classify evaluate clean-pycache clean-ds size-dataset size-train
+.PHONY: help gui preview install-deps dataset submodel-base train classify classify-camera evaluate clean-pycache clean-ds clean-submodel-frames size-dataset size-train
 
 help:
 	@echo "Available targets:"
@@ -21,6 +21,7 @@ help:
 	@echo "  make size-dataset    # Build size-specific dataset (family via FAMILY=, QUALITIES=)"
 	@echo "  make size-train      # Train size submodel (family via FAMILY=, QUALITIES=)"
 	@echo "  make classify        # Launch the inference GUI"
+	@echo "  make classify-camera # Launch the camera inference GUI"
 	@echo "  make evaluate        # Batch-evaluate videos in train/"
 	@echo "  make clean-pycache   # Remove __pycache__ directories"
 	@echo "  make clean-ds        # Remove .DS_Store files"
@@ -79,6 +80,9 @@ train: _gui-check
 classify: _gui-check
 	"$(PYTHON)" -m src.gui.model_viewer$(if $(MODEL), --model "$(MODEL)")$(if $(PRESET), --preset "$(PRESET)")$(if $(SIZE_PRESET), --size-preset "$(SIZE_PRESET)")
 
+classify-camera: _gui-check
+	"$(PYTHON)" -m src.gui.camera_viewer$(if $(MODEL), --model "$(MODEL)")$(if $(PRESET), --preset "$(PRESET)")$(if $(SIZE_PRESET), --size-preset "$(SIZE_PRESET)")$(if $(CAMERA_INDEX), --camera-index "$(CAMERA_INDEX)")$(if $(MAX_CAMERAS), --max-cameras "$(MAX_CAMERAS)")
+
 evaluate: _gui-check
 	"$(PYTHON)" scripts/batch_classify.py$(if $(MODEL), --model "$(MODEL)")$(if $(PRESET), --preset "$(PRESET)")$(if $(TRAIN_DIR), --train-dir "$(TRAIN_DIR)")$(if $(WORKERS), --workers "$(WORKERS)")$(if $(CAPTURE_DIR), --capture-dir "$(CAPTURE_DIR)")
 
@@ -93,3 +97,7 @@ clean-pycache:
 
 clean-ds:
 	find . -name '.DS_Store' -delete
+
+clean-submodel-frames:
+	@echo "Removing frame files under data/submodels"
+	find data/submodels -type f -path '*/frame/*' -print -delete
