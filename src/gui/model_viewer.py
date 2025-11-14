@@ -164,9 +164,10 @@ class VideoClassifierApp(tk.Tk):
 
         self._classification_lock = threading.Lock()
         self._last_prediction_time = 0.0
-        self._prediction_cooldown = 0.5
+        self._prediction_cooldown = 0.3
         self._last_center_distance = None
         self._approaching = False
+        self._last_centroid_x = None
         self._show_contours = False
         self._contour_var = tk.BooleanVar(value=False)
         self._contour_offset = 2
@@ -511,6 +512,13 @@ class VideoClassifierApp(tk.Tk):
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.pipeline.reset_state()
         self._otsu_pipeline.reset_state()
+        self._roi_buffer.clear()
+        self._frame_buffer.clear()
+        self._approaching = False
+        self._last_center_distance = None
+        self._last_centroid_x = None
+        self._object_present = False
+        self._classified_current = False
         frame_idx = 0
         while not self._stop_event.is_set():
             success, frame = cap.read()
@@ -543,10 +551,31 @@ class VideoClassifierApp(tk.Tk):
 
         self.after(16, self._update_display)
 
+    def _find_main_contour_with_hole(self, roi: np.ndarray) -> Optional[np.ndarray]:
+        contours, hierarchy = cv2.findContours(
+            roi, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours or hierarchy is None:
+            return None
+        hierarchy = hierarchy[0]
+        candidates: List[Tuple[float, int]] = []
+        for idx, contour in enumerate(contours):
+            first_child = hierarchy[idx][2]
+            if first_child >= 0:
+                area = cv2.contourArea(contour)
+                if area > 0:
+                    candidates.append((area, idx))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        _, best_idx = candidates[0]
+        return contours[best_idx]
+
     def _maybe_classify(self, frame: np.ndarray, mask: np.ndarray) -> None:
         height, width = mask.shape[:2]
-        roi_left = int(width * self.pipeline.parameters.roi_left_pct)
-        roi_right = int(width * (1.0 - self.pipeline.parameters.roi_right_pct))
+        params = self.pipeline.parameters
+        roi_left = int(width * params.roi_left_pct)
+        roi_right = int(width * (1.0 - params.roi_right_pct))
         roi = mask[:, roi_left:roi_right]
         roi_binary = (roi > 0).astype(np.uint8) * 255
         roi_frame = frame[:, roi_left:roi_right]
@@ -562,31 +591,38 @@ class VideoClassifierApp(tk.Tk):
             )
         )
 
-        contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
+        contour = self._find_main_contour_with_hole(roi_binary)
+        if contour is None:
             self._roi_buffer.clear()
             self._frame_buffer.clear()
             self._approaching = False
             self._last_center_distance = None
+            self._last_centroid_x = None
             self._object_present = False
             self._classified_current = False
             return
-
-        contour = max(contours, key=cv2.contourArea)
         moments = cv2.moments(contour)
         if moments["m00"] == 0:
             return
         centroid_x = (moments["m10"] / moments["m00"]) + roi_left
+        previous_centroid_x = self._last_centroid_x
+        self._last_centroid_x = centroid_x
         frame_center = width / 2.0
         distance = abs(centroid_x - frame_center)
 
         if not self._object_present:
+            # New object entering the scene: reset buffers, tracking state
+            # and clear any previous prediction from the UI.
             self._roi_buffer.clear()
             self._frame_buffer.clear()
             self._object_present = True
             self._classified_current = False
             self._last_center_distance = distance
             self._approaching = False
+            self.result_var.set("")
+            self.size_result_var.set("")
+            self.defect_result_var.set("")
+            self.warning_var.set("")
             return
 
         if self._last_center_distance is None:
@@ -600,14 +636,39 @@ class VideoClassifierApp(tk.Tk):
             if (
                 self._approaching
                 and not self._classified_current
-                and (time.time() - self._last_prediction_time)
-                > self._prediction_cooldown
+                and (
+                    self._last_prediction_time <= 0.0
+                    or (time.time() - self._last_prediction_time)
+                    > self._prediction_cooldown
+                )
             ):
                 center_window = max(width * 0.05, 20)
                 if distance <= center_window:
                     self._approaching = False
                     self._submit_classification()
                     self._classified_current = True
+
+        if (
+            previous_centroid_x is not None
+            and not self._classified_current
+            and (
+                self._last_prediction_time <= 0.0
+                or (time.time() - self._last_prediction_time)
+                > self._prediction_cooldown
+            )
+        ):
+            trigger_line_pct = getattr(params, "trigger_line_pct", 0.5)
+            trigger_band_pct = getattr(params, "trigger_band_pct", 0.05)
+            trigger_line_x = width * trigger_line_pct
+            band_half_width = max(width * trigger_band_pct, 10.0)
+            left_bound = trigger_line_x - band_half_width
+            right_bound = trigger_line_x + band_half_width
+            segment_min = min(previous_centroid_x, centroid_x)
+            segment_max = max(previous_centroid_x, centroid_x)
+            if segment_max >= left_bound and segment_min <= right_bound:
+                self._approaching = False
+                self._submit_classification()
+                self._classified_current = True
 
         self._last_center_distance = distance
 

@@ -27,6 +27,8 @@ class FilterParameters:
     phansalkar_q: float = 10.0
     roi_left_pct: float = 0.2
     roi_right_pct: float = 0.2
+    trigger_line_pct: float = 0.5
+    trigger_band_pct: float = 0.05
     expand_mask: bool = False
     expand_kernel: int = 3
     expand_iterations: int = 1
