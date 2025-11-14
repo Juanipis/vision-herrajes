@@ -40,3 +40,12 @@ def run_tuner() -> None:
     from .gui.video_tuner import run as tuner_run
 
     tuner_run()
+
+
+def run_front_final() -> None:
+    from .gui.front_final import main as front_main
+
+    _run_with_fixed_args(
+        front_main,
+        ["--preset", "PHANSALKAR", "--size-preset", "OTSU"],
+    )
