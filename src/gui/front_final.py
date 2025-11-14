@@ -340,7 +340,15 @@ class FinalFrontApp(CameraClassifierApp):
                 self.defect_result_var.set("")
 
     def _handle_classification_result(self, result: Dict[str, object]) -> None:
-        """Forward to base handler then enforce N/A logic and refresh frame."""
+        """Forward to base handler then enforce N/A logic and refresh frame.
+
+        If the result was marked as ``filtered_out`` (familia desactivada),
+        no se actualiza nada en la UI, como si no hubiera detección.
+        """
+
+        # Skip updates entirely for filtered-out families.
+        if isinstance(result, dict) and result.get("filtered_out"):
+            return
 
         from .model_viewer import VideoClassifierApp  # type: ignore
 
