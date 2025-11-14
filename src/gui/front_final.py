@@ -248,11 +248,6 @@ class FinalFrontApp(CameraClassifierApp):
 
         rois_batch = list(self._roi_buffer)
         frames_batch = list(self._frame_buffer)
-        # Use the last full frame as "last prediction frame" for display.
-        if frames_batch:
-            _, last_frame, *_ = frames_batch[-1]
-            self._last_prediction_frame = last_frame.copy()
-
         import time as _time
 
         self._last_prediction_time = _time.time()
@@ -298,6 +293,13 @@ class FinalFrontApp(CameraClassifierApp):
             frames_batch,
             use_defect_detector=use_defect_detector,
         )
+
+        # Attach the candidate display frame so the UI can decide
+        # whether to show it (depending on family filters).
+        if frames_batch:
+            _, last_frame, *_ = frames_batch[-1]
+            result = dict(result)
+            result["_display_frame"] = last_frame.copy()
 
         label = result.get("label")
         if label:
@@ -360,6 +362,12 @@ class FinalFrontApp(CameraClassifierApp):
         if not self.defect_detector_var.get():
             self.defect_result_var.set("N/A")
 
+        # Update "Last prediction frame" only for non-filtered results.
+        display_frame = None
+        if isinstance(result, dict):
+            display_frame = result.get("_display_frame")
+        if isinstance(display_frame, np.ndarray):
+            self._last_prediction_frame = display_frame
         if self._last_prediction_frame is not None:
             self.last_pred_canvas.update_image(self._last_prediction_frame)
 
