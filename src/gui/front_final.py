@@ -217,6 +217,7 @@ class FinalFrontApp(CameraClassifierApp):
             detectors_frame,
             text="Activar detector de tamaños",
             variable=self.size_detector_enabled_var,
+            command=self._handle_size_toggle,
         ).pack(anchor="w")
 
         tk.Checkbutton(
@@ -310,10 +311,46 @@ class FinalFrontApp(CameraClassifierApp):
                 result["confidence"] = None
         return result
 
-    def _handle_classification_result(self, result: Dict[str, object]) -> None:
-        """Forward to base handler then refresh last prediction frame canvas."""
+    # ------------------------------------------------------------------
+    # Detector toggles & result handling
+    # ------------------------------------------------------------------
+    def _handle_size_toggle(self) -> None:
+        """When size detector is toggled, update the output field."""
 
-        super()._handle_classification_result(result)  # type: ignore[misc]
+        if not self.size_detector_enabled_var.get():
+            # Disabled: clear last size output and show N/A.
+            self.size_result_var.set("N/A")
+        else:
+            # Enabled: remove N/A so new predictions can fill it.
+            if self.size_result_var.get() == "N/A":
+                self.size_result_var.set("")
+
+    def _handle_defect_toggle(self) -> None:
+        """Extend base behavior to set N/A when disabled."""
+
+        from .model_viewer import VideoClassifierApp  # type: ignore
+
+        # Call base implementation to keep warmup/cleanup logic.
+        VideoClassifierApp._handle_defect_toggle(self)  # type: ignore[misc]
+
+        if not self.defect_detector_var.get():
+            self.defect_result_var.set("N/A")
+        else:
+            if self.defect_result_var.get() == "N/A":
+                self.defect_result_var.set("")
+
+    def _handle_classification_result(self, result: Dict[str, object]) -> None:
+        """Forward to base handler then enforce N/A logic and refresh frame."""
+
+        from .model_viewer import VideoClassifierApp  # type: ignore
+
+        VideoClassifierApp._handle_classification_result(self, result)  # type: ignore[misc]
+
+        # If detectors are disabled, keep their fields as N/A regardless of results.
+        if not self.size_detector_enabled_var.get():
+            self.size_result_var.set("N/A")
+        if not self.defect_detector_var.get():
+            self.defect_result_var.set("N/A")
 
         if self._last_prediction_frame is not None:
             self.last_pred_canvas.update_image(self._last_prediction_frame)
