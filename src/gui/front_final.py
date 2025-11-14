@@ -38,7 +38,6 @@ class FinalFrontApp(CameraClassifierApp):
         initial_camera_index: Optional[int] = None,
     ) -> None:
         # Layout-specific state prepared before base initialization.
-        self.mode_var: tk.StringVar
         self._family_check_vars: Dict[str, tk.BooleanVar] = {}
         self.size_detector_enabled_var: tk.BooleanVar
         self._last_prediction_frame = None
@@ -54,7 +53,7 @@ class FinalFrontApp(CameraClassifierApp):
     # Hooks from VideoClassifierApp/CameraClassifierApp
     # ------------------------------------------------------------------
     def _post_setup(self) -> None:
-        """Prepare mode selector and per-family checkboxes."""
+        """Prepare per-family checkboxes."""
 
         super()._post_setup()
 
@@ -64,7 +63,6 @@ class FinalFrontApp(CameraClassifierApp):
         if classes is not None and getattr(classes, "classes_", None) is not None:
             family_labels = sorted({str(label) for label in classes.classes_})
 
-        self.mode_var = tk.StringVar(value="GENERAL")
         self._family_check_vars = {
             label: tk.BooleanVar(value=True) for label in family_labels
         }
@@ -183,18 +181,8 @@ class FinalFrontApp(CameraClassifierApp):
     # Sidebar / controls
     # ------------------------------------------------------------------
     def _build_mode_sidebar(self, parent: tk.Widget) -> None:
-        mode_frame = tk.LabelFrame(
-            parent, text="Selector de modo", padx=8, pady=8
-        )
+        mode_frame = tk.LabelFrame(parent, text="Familias", padx=8, pady=8)
         mode_frame.pack(fill="x", pady=(0, 10))
-
-        tk.Label(mode_frame, text="Modo:").pack(anchor="w")
-        tk.OptionMenu(
-            mode_frame,
-            self.mode_var,
-            "GENERAL",
-            "FILTRAR POR FAMILIAS",
-        ).pack(fill="x", pady=(2, 6))
 
         families_container = tk.Frame(mode_frame)
         families_container.pack(fill="both", expand=True)
@@ -208,7 +196,7 @@ class FinalFrontApp(CameraClassifierApp):
         else:
             tk.Label(
                 families_container,
-                text="Familias (checkbox):",
+                text="Familias:",
                 font=("Helvetica", 10, "bold"),
             ).pack(anchor="w")
             for label, var in sorted(
@@ -311,21 +299,15 @@ class FinalFrontApp(CameraClassifierApp):
         )
 
         label = result.get("label")
-        if not label:
-            return result
-
-        mode = self.mode_var.get().upper()
-        if mode.startswith("GENERAL"):
-            return result
-
-        family_label = str(label)
-        var = self._family_check_vars.get(family_label)
-        if var is not None and not var.get():
-            # Mark prediction as filtered-out; keep other diagnostics intact.
-            result = dict(result)
-            result["filtered_out"] = True
-            result["label"] = None
-            result["confidence"] = None
+        if label:
+            family_label = str(label)
+            var = self._family_check_vars.get(family_label)
+            if var is not None and not var.get():
+                # Mark prediction as filtered-out; keep other diagnostics intact.
+                result = dict(result)
+                result["filtered_out"] = True
+                result["label"] = None
+                result["confidence"] = None
         return result
 
     def _handle_classification_result(self, result: Dict[str, object]) -> None:
