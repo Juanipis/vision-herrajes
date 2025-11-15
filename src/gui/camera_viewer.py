@@ -7,11 +7,14 @@ import queue
 import time
 import tkinter as tk
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 import cv2
 
 from .model_viewer import DEFAULT_PRESET_NAME, VideoClassifierApp
+
+if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
+    from .expulsores import Expulsores
 
 
 class CameraClassifierApp(VideoClassifierApp):
@@ -29,15 +32,23 @@ class CameraClassifierApp(VideoClassifierApp):
         self._camera_indices: List[int] = []
         self._camera_index_var: Optional[tk.StringVar] = None
         self._camera_menu: Optional[tk.OptionMenu] = None
+        self._expulsor: Optional["Expulsores"] = None
+        self.expulsor_status_var: Optional[tk.StringVar] = None
+        self._expulsor_status_job: Optional[str] = None
         super().__init__(
             model_path=model_path,
             preset_name=preset_name,
             size_preset_name=size_preset_name,
         )
+        self._expulsor = self._init_expulsor()
+        self._update_expulsor_status_var()
+        self._schedule_expulsor_status_refresh()
         if self._initial_camera_index is not None:
             self.after(200, self._auto_connect_initial)
 
     def _post_setup(self) -> None:
+        if self.expulsor_status_var is None:
+            self.expulsor_status_var = tk.StringVar(value="PLC: initializing")
         super()._post_setup()
         discovered = self._discover_cameras()
         if (
@@ -60,7 +71,10 @@ class CameraClassifierApp(VideoClassifierApp):
         tk.Label(control_bar, text="Camera").pack(side="left", padx=(0, 4))
         values = self._camera_display_values()
         # Ensure the string var always has a value present in the menu.
-        if self._camera_index_var is not None and self._camera_index_var.get() not in values:
+        if (
+            self._camera_index_var is not None
+            and self._camera_index_var.get() not in values
+        ):
             self._camera_index_var.set(values[0])
         self._camera_menu = tk.OptionMenu(
             control_bar,
@@ -177,6 +191,13 @@ class CameraClassifierApp(VideoClassifierApp):
         self._camera_index_var.set(target)
         self._connect_camera()
 
+    def _handle_classification_result(self, result: Dict[str, object]) -> None:
+        try:
+            super()._handle_classification_result(result)
+        except Exception as exc:
+            print(f"[WARN] CameraClassifierApp result handling failed: {exc}")
+        self._maybe_actuate_expulsor(result)
+
     def _discover_cameras(self) -> List[int]:
         indices: List[int] = []
         for idx in range(self._max_probe):
@@ -187,6 +208,115 @@ class CameraClassifierApp(VideoClassifierApp):
                 indices.append(idx)
             cap.release()
         return indices
+
+    def _on_close(self) -> None:
+        self._cancel_expulsor_status_refresh()
+        self._shutdown_expulsor()
+        super()._on_close()
+
+    # ------------------------------------------------------------------
+    # Expulsor helpers
+    # ------------------------------------------------------------------
+    def _init_expulsor(self) -> Optional["Expulsores"]:
+        try:
+            from .expulsores import Expulsores
+        except Exception as exc:
+            print(f"[WARN] Expulsores module unavailable: {exc}")
+            return None
+        try:
+            return Expulsores()
+        except Exception as exc:
+            print(f"[WARN] Could not initialize Expulsores: {exc}")
+            return None
+
+    def _shutdown_expulsor(self) -> None:
+        expulsor = getattr(self, "_expulsor", None)
+        if expulsor is None:
+            return
+        try:
+            expulsor.close()
+        except Exception as exc:
+            print(f"[WARN] Failed to close Expulsores: {exc}")
+        finally:
+            self._expulsor = None
+
+    def _maybe_actuate_expulsor(self, result: Optional[Dict[str, object]]) -> None:
+        if not result or self._expulsor is None:
+            return
+        label = result.get("label") if isinstance(result, dict) else None
+        if not label:
+            return
+
+        allowed, defect_state = self._defect_allows_activation(result)
+        if not allowed:
+            try:
+                self._expulsor.activar_motor(0)
+            except Exception as exc:
+                print(f"[WARN] Expulsores activar_motor failed: {exc}")
+            status = getattr(self, "status_var", None)
+            if status is not None:
+                if defect_state:
+                    status.set(f"Predicción {defect_state}: pieza sin expulsar")
+                else:
+                    status.set("Pieza sin expulsar (estado desconocido)")
+            return
+        try:
+            motor = self._expulsor.run_prediction(str(label))
+        except Exception as exc:
+            print(f"[WARN] Expulsores run_prediction failed: {exc}")
+            return
+
+        status = getattr(self, "status_var", None)
+        if status is None or motor is None:
+            return
+        if motor == -1:
+            status.set(f"Etiqueta '{label}' desconocida; motores apagados")
+        elif motor == 0:
+            status.set("Motores apagados por seguridad")
+        else:
+            status.set(f"Motor {motor} activado para '{label}'")
+
+    def _schedule_expulsor_status_refresh(self) -> None:
+        self._update_expulsor_status_var()
+        self._expulsor_status_job = self.after(1500, self._schedule_expulsor_status_refresh)
+
+    def _cancel_expulsor_status_refresh(self) -> None:
+        if self._expulsor_status_job is not None:
+            try:
+                self.after_cancel(self._expulsor_status_job)
+            except Exception:
+                pass
+            self._expulsor_status_job = None
+
+    def _update_expulsor_status_var(self) -> None:
+        if self.expulsor_status_var is None:
+            return
+        self.expulsor_status_var.set(self._describe_expulsor_state())
+
+    def _describe_expulsor_state(self) -> str:
+        expulsor = getattr(self, "_expulsor", None)
+        if expulsor is None:
+            return "PLC: unavailable"
+        ip = getattr(expulsor, "PLC_IP", "?")
+        if getattr(expulsor, "simulate", False):
+            return "PLC: simulation"
+        if getattr(expulsor, "connected", False):
+            return f"PLC: connected ({ip})"
+        return "PLC: disconnected"
+
+    def _defect_allows_activation(
+        self, result: Dict[str, object]
+    ) -> tuple[bool, Optional[str]]:
+        defect_info = result.get("defect") if isinstance(result, dict) else None
+        if not isinstance(defect_info, dict):
+            return True, None
+        label = defect_info.get("label")
+        if not isinstance(label, str):
+            return True, None
+        normalized = label.strip().upper()
+        if not normalized:
+            return True, None
+        return normalized == "BUENO", normalized
 
 
 def parse_args() -> argparse.Namespace:

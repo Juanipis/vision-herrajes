@@ -41,6 +41,9 @@ class FinalFrontApp(CameraClassifierApp):
         self._family_check_vars: Dict[str, tk.BooleanVar] = {}
         self.size_detector_enabled_var: tk.BooleanVar
         self._last_prediction_frame = None
+        self._prediction_log: List[str] = []
+        self._prediction_log_max = 6
+        self._prediction_listbox: Optional[tk.Listbox] = None
         super().__init__(
             model_path=model_path,
             preset_name=preset_name,
@@ -105,6 +108,7 @@ class FinalFrontApp(CameraClassifierApp):
             height=360,
         )
         self.raw_canvas.pack(fill="both", expand=True)
+        self._build_left_bottom(left_col)
 
         # Center: last prediction frame + output summary
         center_col = tk.Frame(main)
@@ -176,6 +180,59 @@ class FinalFrontApp(CameraClassifierApp):
 
         # Initialize contour parameters but keep UI compact; no contour toggles.
         self._update_contour_params()
+
+    def _handle_classification_result(self, result: Dict[str, object]) -> None:
+        super()._handle_classification_result(result)
+        self._record_prediction_entry(result)
+
+    def _build_left_bottom(self, parent: tk.Widget) -> None:
+        status_frame = tk.LabelFrame(parent, text="Estado PLC", padx=6, pady=4)
+        status_frame.pack(fill="x", pady=(8, 0))
+        status_var = getattr(self, "expulsor_status_var", None)
+        if status_var is None:
+            status_var = tk.StringVar(value="PLC: desconocido")
+            self.expulsor_status_var = status_var  # type: ignore[attr-defined]
+        tk.Label(
+            status_frame,
+            textvariable=status_var,
+            font=("Helvetica", 9),
+            anchor="w",
+        ).pack(fill="x")
+
+        log_frame = tk.LabelFrame(parent, text="Últimas predicciones", padx=6, pady=4)
+        log_frame.pack(fill="x", pady=(6, 0))
+        self._prediction_listbox = tk.Listbox(
+            log_frame,
+            height=self._prediction_log_max,
+            font=("Helvetica", 9),
+        )
+        self._prediction_listbox.pack(fill="both", expand=True)
+        self._refresh_prediction_log_widget()
+
+    def _record_prediction_entry(self, result: Optional[Dict[str, object]]) -> None:
+        if not isinstance(result, dict):
+            return
+        family = str(result.get("label") or "--").upper()
+        size_label = "--"
+        size_info = result.get("size")
+        if isinstance(size_info, dict) and size_info.get("label"):
+            size_label = str(size_info["label"]).upper()
+        defect_label = "--"
+        defect_info = result.get("defect")
+        if isinstance(defect_info, dict) and isinstance(defect_info.get("label"), str):
+            defect_label = str(defect_info["label"]).upper()
+        entry = f"{family} - {size_label} - {defect_label}"
+        self._prediction_log.append(entry)
+        if len(self._prediction_log) > self._prediction_log_max:
+            self._prediction_log = self._prediction_log[-self._prediction_log_max :]
+        self._refresh_prediction_log_widget()
+
+    def _refresh_prediction_log_widget(self) -> None:
+        if self._prediction_listbox is None:
+            return
+        self._prediction_listbox.delete(0, tk.END)
+        for entry in reversed(self._prediction_log):
+            self._prediction_listbox.insert(0, entry)
 
     # ------------------------------------------------------------------
     # Sidebar / controls
