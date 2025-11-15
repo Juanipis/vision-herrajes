@@ -21,6 +21,9 @@ from snap7.util import set_bool  # type: ignore
 # Set this to False when the PLC is available.
 SIMULATION_ENABLED = True
 
+# Default PLC endpoint.
+PLC_DEFAULT_IP = "192.168.0.4"
+
 # Default family-to-motor mapping, kept at module level to document intent.
 DEFAULT_LABEL_TO_MOTOR: Dict[str, int] = {
     "anillo": 2,
@@ -39,7 +42,7 @@ class Expulsores:
 
     def __init__(
         self,
-        plc_ip: str = "192.168.0.4",
+        plc_ip: str = PLC_DEFAULT_IP,
         rack: int = 0,
         slot: int = 1,
         mapping: Optional[Dict[str, int]] = None,
@@ -162,4 +165,4 @@ class Expulsores:
             pass
 
 
-__all__ = ["Expulsores", "SIMULATION_ENABLED"]
+__all__ = ["Expulsores", "SIMULATION_ENABLED", "PLC_DEFAULT_IP", "DEFAULT_LABEL_TO_MOTOR"]
